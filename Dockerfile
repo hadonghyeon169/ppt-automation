@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV DATA_DIR=/data
-VOLUME ["/data"]
+VOLUME
 
 EXPOSE 8000
 CMD ["gunicorn", "-w", "2", "--threads", "4", "--timeout", "300", "-b", "0.0.0.0:8000", "wsgi:app"]
