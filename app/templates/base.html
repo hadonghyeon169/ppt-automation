@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}CultureFi PPT 자동화{% endblock %}</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --card: #ffffff; --border: #e5e5e8; --text: #1c1c1f; --muted: #6b6b76;
+    --primary: #2f5fe0; --primary-dark: #2447b3; --success: #1b8a5a; --warning: #b8860b; --error: #c22828;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", "Pretendard", "Noto Sans KR", sans-serif;
+         background: var(--bg); color: var(--text); }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header.topbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 24px;
+                  display:flex; align-items:center; justify-content:space-between; }
+  header.topbar .brand { font-weight: 700; font-size: 16px; }
+  header.topbar nav a { margin-left: 16px; font-size: 14px; color: var(--muted); }
+  main { max-width: 980px; margin: 32px auto; padding: 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0 0 20px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .btn { display:inline-block; background: var(--primary); color:#fff; border:none; padding: 9px 16px;
+         border-radius: 8px; font-size: 14px; cursor:pointer; }
+  .btn:hover { background: var(--primary-dark); text-decoration:none; }
+  .btn.secondary { background: #efeff2; color: var(--text); }
+  .btn.secondary:hover { background:#e2e2e7; }
+  .btn.danger { background: var(--error); }
+  .btn:disabled { opacity: .5; cursor:not-allowed; }
+  input[type=text], input[type=password], input[type=file], select, textarea {
+    width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; margin-top:4px;
+  }
+  label { font-size: 13px; color: var(--muted); display:block; margin-top: 14px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align:left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .badge { display:inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight:600; }
+  .badge.info { background:#e7edfb; color:#2447b3; }
+  .badge.warning { background:#fbf1da; color:var(--warning); }
+  .badge.error { background:#fbe4e4; color:var(--error); }
+  .badge.success { background:#e2f5ea; color:var(--success); }
+  .stage-pill { display:inline-block; padding:4px 12px; border-radius:999px; background:#eef1fb; color:var(--primary-dark); font-size:13px; font-weight:600; }
+  .progress-outer { background:#eee; border-radius: 999px; height:8px; overflow:hidden; margin-top:8px; }
+  .progress-inner { background: var(--primary); height:100%; transition: width .3s; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+  .flash.error { background:#fbe4e4; color:var(--error); }
+  .flash.success { background:#e2f5ea; color:var(--success); }
+  .preview-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:10px; }
+  .preview-grid img { width:100%; border:1px solid var(--border); border-radius:6px; }
+  .flag-row.resolved { opacity: .45; }
+  footer { text-align:center; color: var(--muted); font-size: 12px; padding: 30px 0; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">📽️ CultureFi PPT 자동화</div>
+  <nav>
+    {% if session.get('user_id') %}
+      <a href="{{ url_for('projects.dashboard') }}">프로젝트</a>
+      <a href="{{ url_for('settings.index') }}">API 설정</a>
+      <a href="{{ url_for('auth.logout') }}">로그아웃 ({{ session.get('username') }})</a>
+    {% else %}
+      <a href="{{ url_for('auth.login') }}">로그인</a>
+    {% endif %}
+  </nav>
+</header>
+<main>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+<footer>CultureFi PPT 자동화 시스템 — 내부용 도구</footer>
+</body>
+</html>

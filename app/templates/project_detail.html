@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}{{ project['name'] }} - CultureFi PPT 자동화{% endblock %}
+{% macro flag_list(flags, stage) %}
+  {% set relevant = flags|selectattr('stage', 'equalto', stage)|list %}
+  {% if not relevant %}
+    <div class="muted">항목 없음</div>
+  {% else %}
+    <table>
+      <thead><tr><th>슬라이드</th><th>도형</th><th>원문/기대값</th><th>번역/실제값</th><th>이슈</th><th>심각도</th><th></th></tr></thead>
+      <tbody>
+      {% for f in relevant %}
+        <tr class="flag-row {{ 'resolved' if f['resolved'] else '' }}">
+          <td>{{ (f['slide_index'] + 1) if f['slide_index'] is not none else '-' }}</td>
+          <td>{{ f['shape_name'] or '-' }}</td>
+          <td style="max-width:180px; white-space:pre-wrap;">{{ f['source_text'] or '-' }}</td>
+          <td style="max-width:180px; white-space:pre-wrap;">{{ f['translated_text'] or '-' }}</td>
+          <td>{{ f['issue'] }}</td>
+          <td><span class="badge {{ f['severity'] }}">{{ f['severity'] }}</span></td>
+          <td>
+            {% if not f['resolved'] %}
+            <form method="post" action="{{ url_for('projects.resolve_flag', project_id=project['id'], flag_id=f['id']) }}">
+              <button class="btn secondary" type="submit" style="padding:4px 8px; font-size:12px;">확인함</button>
+            </form>
+            {% else %}
+              <span class="muted">✓ 확인됨</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:flex-start;">
+  <div>
+    <h1 style="margin-bottom:4px;">{{ project['name'] }}</h1>
+    <div class="muted">{{ lang_meta.get('label', project['target_lang']) }} · 원본: {{ project['original_filename'] }}</div>
+  </div>
+  <span class="stage-pill" id="stage-pill">{{ project['stage'] }}</span>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>파이프라인 진행 상황</h2>
+  <div id="status-message" class="muted">{{ project['status_message'] or '' }}</div>
+  <div class="progress-outer"><div class="progress-inner" id="progress-bar" style="width:{{ project['progress'] }}%;"></div></div>
+
+  <div style="margin-top:18px;">
+    {% if project['stage'] == 'uploaded' %}
+      <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
+        <button class="btn" type="submit">① 번역 시작 (Claude API)</button>
+      </form>
+
+    {% elif project['stage'] in ('translating',) %}
+      <div class="muted">번역 진행 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+
+    {% elif project['stage'] == 'review_translation' %}
+      <h2 style="margin-top:24px;">② 번역 검수 (AI 자동 비교 + 사람 확인)</h2>
+      {{ flag_list(flags, 'translation') }}
+      <div class="row" style="margin-top:16px;">
+        <form method="post" action="{{ url_for('projects.confirm_translation', project_id=project['id']) }}">
+          <button class="btn" type="submit">번역 승인하고 다음 단계로</button>
+        </form>
+        <form method="post" action="{{ url_for('projects.confirm_translation', project_id=project['id']) }}">
+          <input type="hidden" name="force" value="1">
+          <button class="btn secondary" type="submit">오류 있어도 강제 진행</button>
+        </form>
+        <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit">다시 번역 실행</button>
+        </form>
+        <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='translated') }}">번역본 다운로드</a>
+      </div>
+      {% if preview_translated %}
+      <h2 style="margin-top:24px;">렌더링 미리보기</h2>
+      <div class="preview-grid">
+        {% for f in preview_translated %}
+          <img src="{{ url_for('projects.preview_image', project_id=project['id'], stage='preview_translated', filename=f) }}">
+        {% endfor %}
+      </div>
+      {% endif %}
+
+    {% elif project['stage'] == 'tts_pending' %}
+      <a class="btn" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}">③ 음성 생성 설정 (타입캐스트)</a>
+
+    {% elif project['stage'] == 'tts_running' %}
+      <div class="muted">음성 생성 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+
+    {% elif project['stage'] == 'tts_review' %}
+      <h2 style="margin-top:24px;">음성 파일 검수</h2>
+      <table>
+        <thead><tr><th>슬라이드</th><th>스크립트</th><th>길이</th><th>재생</th><th>상태</th></tr></thead>
+        <tbody>
+        {% for a in audio_assets %}
+          <tr>
+            <td>{{ a['slide_index'] + 1 }}</td>
+            <td style="max-width:320px; white-space:pre-wrap;">{{ a['script_text'] }}</td>
+            <td>{{ a['duration_sec'] or '-' }}초</td>
+            <td>{% if a['status'] == 'done' %}<audio controls src="{{ url_for('projects.audio_file', project_id=project['id'], asset_id=a['id']) }}" style="height:30px;"></audio>{% endif %}</td>
+            <td><span class="badge {{ 'success' if a['status']=='done' else ('error' if a['status']=='error' else 'info') }}">{{ a['status'] }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="row" style="margin-top:16px;">
+        <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}">
+          <button class="btn" type="submit">④ 최종 검수 실행 (음성+PPT AI 자동 비교)</button>
+        </form>
+        <a class="btn secondary" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}">음성 다시 생성</a>
+      </div>
+
+    {% elif project['stage'] == 'final_running' %}
+      <div class="muted">최종 검수 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+
+    {% elif project['stage'] == 'review_final' %}
+      <h2 style="margin-top:24px;">⑤ 최종 검수 결과 (PPT가 승인된 번역과 100% 일치하는지 자동 확인)</h2>
+      {{ flag_list(flags, 'final') }}
+      <div class="row" style="margin-top:16px;">
+        <form method="post" action="{{ url_for('projects.confirm_final', project_id=project['id']) }}">
+          <button class="btn" type="submit">최종 승인 (완료 처리)</button>
+        </form>
+        <form method="post" action="{{ url_for('projects.confirm_final', project_id=project['id']) }}">
+          <input type="hidden" name="force" value="1">
+          <button class="btn secondary" type="submit">오류 있어도 강제 완료</button>
+        </form>
+        <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit">최종 검수 다시 실행</button>
+        </form>
+      </div>
+      {% if preview_final %}
+      <h2 style="margin-top:24px;">최종 렌더링 미리보기</h2>
+      <div class="preview-grid">
+        {% for f in preview_final %}
+          <img src="{{ url_for('projects.preview_image', project_id=project['id'], stage='preview_final', filename=f) }}">
+        {% endfor %}
+      </div>
+      {% endif %}
+
+    {% elif project['stage'] == 'completed' %}
+      <div class="badge success" style="font-size:14px; padding:6px 14px;">✓ 완료</div>
+      <div class="row" style="margin-top:16px;">
+        <a class="btn" href="{{ url_for('projects.download', project_id=project['id'], which='final') }}">최종 PPT 다운로드</a>
+        <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='original') }}">원본 다운로드</a>
+      </div>
+
+    {% elif project['stage'] == 'failed' %}
+      <div class="flash error">{{ project['status_message'] }}</div>
+      <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
+        <button class="btn" type="submit">번역 단계부터 다시 시도</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>진행 로그</h2>
+  <table>
+    <tbody>
+    {% for e in events %}
+      <tr><td class="muted" style="width:150px;">{{ e['created_at'] }}</td>
+          <td><span class="badge {{ 'error' if e['level']=='error' else 'info' }}">{{ e['level'] }}</span></td>
+          <td>{{ e['message'] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<form method="post" action="{{ url_for('projects.delete_project', project_id=project['id']) }}"
+      onsubmit="return confirm('정말 이 프로젝트를 삭제하시겠습니까?');">
+  <button class="btn danger" type="submit" style="font-size:12px; padding:6px 10px;">프로젝트 삭제</button>
+</form>
+
+{% if project['stage'] in ('translating', 'tts_running', 'final_running') %}
+<script>
+  async function poll() {
+    try {
+      const res = await fetch(window.location.pathname + '/status.json');
+      const data = await res.json();
+      document.getElementById('progress-bar').style.width = data.progress + '%';
+      document.getElementById('status-message').textContent = data.status_message || '';
+      document.getElementById('stage-pill').textContent = data.stage;
+      if (data.stage !== '{{ project['stage'] }}') {
+        window.location.reload();
+        return;
+      }
+    } catch (e) { /* ignore */ }
+    setTimeout(poll, 2500);
+  }
+  poll();
+</script>
+{% endif %}
+{% endblock %}

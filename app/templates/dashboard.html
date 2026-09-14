@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}프로젝트 - CultureFi PPT 자동화{% endblock %}
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+  <h1 style="margin:0;">프로젝트 목록</h1>
+  <a class="btn" href="{{ url_for('projects.new_project') }}">+ 새 PPT 업로드</a>
+</div>
+
+{% if not projects %}
+  <div class="card muted">아직 프로젝트가 없습니다. 위 버튼으로 첫 PPT를 업로드해보세요.</div>
+{% else %}
+<div class="card">
+  <table>
+    <thead><tr><th>이름</th><th>언어</th><th>단계</th><th>업데이트</th><th></th></tr></thead>
+    <tbody>
+      {% for p in projects %}
+      <tr>
+        <td><a href="{{ url_for('projects.detail', project_id=p['id']) }}">{{ p['name'] }}</a></td>
+        <td>{{ languages.get(p['target_lang'], {}).get('label', p['target_lang']) }}</td>
+        <td><span class="stage-pill">{{ p['stage'] }}</span></td>
+        <td class="muted">{{ p['updated_at'] }}</td>
+        <td><a href="{{ url_for('projects.detail', project_id=p['id']) }}">열기 →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

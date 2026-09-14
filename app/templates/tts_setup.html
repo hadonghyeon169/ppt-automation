@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}음성 생성 설정{% endblock %}
+{% block content %}
+<div class="card" style="max-width:560px;">
+  <h1>음성 생성 설정 — {{ project['name'] }}</h1>
+  {% if voice_error %}
+    <div class="flash error">타입캐스트 보이스 목록을 불러오지 못했습니다: {{ voice_error }}</div>
+  {% endif %}
+  {% if not voices and not voice_error %}
+    <div class="flash error">타입캐스트 API 키가 설정되어 있지 않습니다. <a href="{{ url_for('settings.index') }}">설정 페이지</a>에서 먼저 등록해주세요.</div>
+  {% endif %}
+  <form method="post">
+    <label>보이스 선택</label>
+    <select name="voice_id" required {{ 'disabled' if not voices }}>
+      <option value="" disabled selected>보이스를 선택하세요</option>
+      {% for v in voices %}
+        <option value="{{ v.voice_id }}">{{ v.voice_name }} ({{ v.voice_id }})</option>
+      {% endfor %}
+    </select>
+
+    <label>오디오 포맷</label>
+    <select name="audio_format">
+      <option value="wav">WAV (재생 길이 자동 측정 가능, 권장)</option>
+      <option value="mp3">MP3</option>
+    </select>
+
+    <div style="margin-top:20px;">
+      <button class="btn" type="submit" {{ 'disabled' if not voices }}>음성 생성 시작</button>
+      <a class="btn secondary" href="{{ url_for('projects.detail', project_id=project['id']) }}">취소</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

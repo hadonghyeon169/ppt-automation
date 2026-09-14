@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}새 PPT 업로드{% endblock %}
+{% block content %}
+<div class="card" style="max-width:560px;">
+  <h1>새 PPT 업로드</h1>
+  <form method="post" enctype="multipart/form-data">
+    <label>프로젝트 이름 (비워두면 파일명 사용)</label>
+    <input type="text" name="name" placeholder="예: 14강_저녁7시에만날까요">
+
+    <label>번역할 PPT 파일 (.pptx)</label>
+    <input type="file" name="pptx_file" accept=".pptx" required>
+
+    <label>목표 언어</label>
+    <select name="target_lang" required>
+      <option value="" disabled selected>언어 선택</option>
+      {% for code, meta in languages.items() %}
+        <option value="{{ code }}">{{ meta.label }} ({{ code }})</option>
+      {% endfor %}
+    </select>
+
+    <label>완성본 대조용 참고 PPT (선택, 같은 시리즈의 기 번역 파일)</label>
+    <input type="file" name="reference_file" accept=".pptx">
+
+    <div style="margin-top:20px;">
+      <button class="btn" type="submit">업로드 후 프로젝트 생성</button>
+      <a class="btn secondary" href="{{ url_for('projects.dashboard') }}">취소</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

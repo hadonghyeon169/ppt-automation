@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}API 설정{% endblock %}
+{% block content %}
+<div class="card" style="max-width:560px;">
+  <h1>API 키 설정</h1>
+  <p class="muted">키가 없어도 서버는 정상 동작합니다. 각 단계 실행 시 필요한 키가 없으면 안내 메시지가 표시됩니다.
+  값을 비워두고 저장하면 기존 키가 유지됩니다.</p>
+  <form method="post">
+    {% for key_name, label in key_fields %}
+      <label>{{ label }}{% if masked.get(key_name) %} — 현재: <code>{{ masked[key_name] }}</code>{% else %} — <span style="color:#c22828;">미설정</span>{% endif %}</label>
+      <input type="text" name="{{ key_name }}" placeholder="새 값을 입력하면 교체됩니다">
+    {% endfor %}
+    <div style="margin-top:20px;">
+      <button class="btn" type="submit">저장</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
