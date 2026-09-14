@@ -67,8 +67,13 @@
           <button class="btn secondary" type="submit">오류 있어도 강제 진행</button>
         </form>
         <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
-          <button class="btn secondary" type="submit">다시 번역 실행</button>
+          <button class="btn secondary" type="submit">다시 번역 실행 (전체)</button>
         </form>
+        {% if project['failed_batches_json'] and project['failed_batches_json'] != '[]' %}
+        <form method="post" action="{{ url_for('projects.retry_translation_failed', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit">실패한 배치만 재시도</button>
+        </form>
+        {% endif %}
         <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='translated') }}">번역본 다운로드</a>
       </div>
       {% if preview_translated %}
@@ -106,7 +111,12 @@
         <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}">
           <button class="btn" type="submit">④ 최종 검수 실행 (음성+PPT AI 자동 비교)</button>
         </form>
-        <a class="btn secondary" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}">음성 다시 생성</a>
+        {% if audio_assets|selectattr('status','equalto','error')|list %}
+        <form method="post" action="{{ url_for('projects.tts_retry_failed', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit">실패한 슬라이드만 재시도</button>
+        </form>
+        {% endif %}
+        <a class="btn secondary" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}">음성 처음부터 다시 생성</a>
       </div>
 
     {% elif project['stage'] == 'final_running' %}

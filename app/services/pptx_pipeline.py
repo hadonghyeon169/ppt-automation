@@ -41,7 +41,13 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
         translated_sp_on_slide = []
 
         for shape_idx, sp in enumerate(sp_list):
-            shape_id = f"s{slide_idx}_{shape_idx}"
+            # slide_extractor와 동일한 방식(도형 고유 XML id 기반)으로 shape_id를 계산해야
+            # plan_by_shape/extracted_by_id와 정확히 매칭된다 (순번 기반이면 이후
+            # cleanup_duplicate_shapes가 도형을 지울 때 뒤따르는 도형들의 순번이 밀려서
+            # 스냅샷과 어긋난다 — 실제로 겪은 버그).
+            cnvpr_id = ops.get_shape_cnvpr_id(sp)
+            stable_id = cnvpr_id if cnvpr_id is not None else f"x{shape_idx}"
+            shape_id = f"s{slide_idx}_{stable_id}"
             plan = plan_by_shape.get(shape_id)
             meta = extracted_by_id.get(shape_id)
             if not plan or not meta:

@@ -20,6 +20,7 @@ def extract_presentation(pptx_path):
             if not full_text:
                 continue
             name = ops.get_shape_name(sp)
+            cnvpr_id = ops.get_shape_cnvpr_id(sp)
             xfrm = ops.get_shape_xfrm(sp)
             wrap = ops.get_body_pr_wrap(sp)
             align = ops.get_paragraph_align(sp)
@@ -43,8 +44,13 @@ def extract_presentation(pptx_path):
                     ptext = "".join((t.text or "") for t in p.iter(qn('a:t')))
                     para_texts.append(ptext)
 
+            # 도형 식별자: 슬라이드 내 순번이 아니라 도형 고유 XML id(cNvPr/@id) 기반으로 만든다.
+            # 순번 기반이면 나중에 다른 도형이 삭제될 때(예: cleanup_duplicate_shapes) 뒤따르는
+            # 도형들의 shape_id가 통째로 밀려서, 번역 승인 시점 스냅샷과 최종 검수 시점 재추출
+            # 결과가 어긋나는 문제가 있었다 (표면상 "텍스트 불일치"/"도형을 찾을 수 없음"으로 보임).
+            stable_id = cnvpr_id if cnvpr_id is not None else f"x{shape_idx}"
             shapes_data.append({
-                "shape_id": f"s{slide_idx}_{shape_idx}",
+                "shape_id": f"s{slide_idx}_{stable_id}",
                 "shape_name": name,
                 "full_text": full_text,
                 "paragraph_texts": para_texts,

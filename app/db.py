@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS projects (
     reference_path TEXT,                   -- 완성본 대조용 (같은 시리즈 기 번역본), 선택
     translated_path TEXT,
     final_path TEXT,
+    plan_json TEXT,                        -- 마지막 번역 계획(shape_id -> plan dict) 전체 스냅샷.
+                                            -- 실패한 배치만 재시도할 때 성공한 부분을 재활용하기 위해 보관.
+    failed_batches_json TEXT,              -- 마지막 번역 실행에서 실패한 배치들의 슬라이드 인덱스 목록.
+                                            -- 비어있으면([] 또는 NULL) 재시도할 실패 배치 없음.
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -122,10 +126,23 @@ def get_conn_for_path(db_path):
     return conn
 
 
+# 이미 배포된 DB(볼륨에 저장되어 재배포해도 남아있음)에 새 컬럼을 안전하게 추가하기 위한
+# 최소 마이그레이션. CREATE TABLE IF NOT EXISTS는 기존 테이블에 컬럼을 추가해주지 않으므로,
+# 여기서 없는 컬럼만 골라 ALTER TABLE로 보강한다 (이미 있으면 아무 것도 하지 않음 — 멱등적).
+MIGRATIONS = [
+    ("projects", "plan_json", "TEXT"),
+    ("projects", "failed_batches_json", "TEXT"),
+]
+
+
 def init_db(db_path):
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    for table, col, coltype in MIGRATIONS:
+        existing_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
     conn.commit()
     conn.close()
 

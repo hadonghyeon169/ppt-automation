@@ -60,6 +60,19 @@ def get_shape_name(sp_elem) -> str:
     return cnv.get('name', '')
 
 
+def get_shape_cnvpr_id(sp_elem):
+    """도형의 실제 OOXML id(p:nvSpPr/p:cNvPr/@id)를 반환. PowerPoint가 슬라이드 안에서
+    도형마다 고유하게 부여하는 값이라, 슬라이드 내 다른 도형이 삭제/추가되어도 바뀌지 않는다
+    (순번 기반 식별과 달리 안정적). 없으면 None."""
+    nv = sp_elem.find(qn('p:nvSpPr'))
+    if nv is None:
+        return None
+    cnv = nv.find(qn('p:cNvPr'))
+    if cnv is None:
+        return None
+    return cnv.get('id')
+
+
 def apply_target_font_to_run(run_elem, lang_code, font_name, is_complex_script=False, force_bold=None):
     """스킬 문서 "볼드체 규칙" 절의 apply_target_font_to_run()을 그대로 이식.
     - 한국어가 섞인 텍스트(번역 후 기준) → 볼드 강제 on, 폰트는 원본 유지

@@ -4,6 +4,7 @@ Flask 요청 스레드가 아닌 별도 백그라운드 스레드에서 실행�
 의존하지 않고 모든 값을 인자로 명시적으로 받는다 (db_path, 디렉토리, API 키 등).
 """
 import os
+import json
 import logging
 import traceback
 
@@ -70,9 +71,19 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
         if plan_errors:
             repo.add_review_flags(db_path, project_id, "translation", [
                 {"slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
-                 "issue": f"슬라이드 {e['slides']} 배치 번역 실패: {e['error']}", "severity": "error"}
+                 "issue": f"슬라이드 {e['slides']} 배치 번역 실패: {e['error']} "
+                          f"(검수 화면에서 '실패한 배치만 재시도'로 다시 시도할 수 있습니다)",
+                 "severity": "error"}
                 for e in plan_errors
             ])
+
+        # 실패한 배치만 나중에 재시도할 수 있도록 전체 plan과 실패 배치 목록을 저장해둔다.
+        # (재시도 시 이미 성공한 배치는 API를 다시 호출하지 않고 그대로 재사용한다)
+        repo.update_project(
+            db_path, project_id,
+            plan_json=json.dumps(plan_by_shape, ensure_ascii=False),
+            failed_batches_json=json.dumps([e["slides"] for e in plan_errors], ensure_ascii=False),
+        )
 
         repo.update_project(db_path, project_id, progress=75, status_message="PPT 파일에 번역 반영 중...")
         out_dir = os.path.join(pdir, "translated")
@@ -120,25 +131,133 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
         repo.add_event(db_path, project_id, f"번역 단계 실패: {e}", level="error")
 
 
+def retry_failed_translation_batches(db_path, projects_dir, project_id, languages, anthropic_model):
+    """직전 번역 실행에서 실패했던 배치만 다시 호출한다. 이미 성공한 배치는 API를
+    재호출하지 않고 저장해둔 plan_json을 그대로 재사용 — 토큰 낭비 없이 실패한 부분만 고친다."""
+    try:
+        project = repo.get_project(db_path, project_id)
+        failed_batches = json.loads(project.get("failed_batches_json") or "[]")
+        if not failed_batches:
+            repo.add_event(db_path, project_id, "재시도할 실패 배치가 없습니다 (이전 실행이 모두 성공).")
+            return
+
+        repo.update_project(db_path, project_id, stage="translating", progress=0,
+                             status_message=f"실패한 배치 {len(failed_batches)}개만 재시도 중...")
+        repo.add_event(db_path, project_id, f"번역 실패 배치 재시도 시작 ({len(failed_batches)}개 배치)")
+
+        lang_code = project["target_lang"]
+        lang_meta = languages[lang_code]
+        pdir = _project_dir(projects_dir, project_id)
+
+        extracted = slide_extractor.extract_presentation(project["original_path"])
+        reference_extracted = None
+        if project.get("reference_path") and os.path.exists(project["reference_path"]):
+            try:
+                reference_extracted = slide_extractor.extract_presentation(project["reference_path"])
+            except Exception:
+                logger.warning("reference extraction failed", exc_info=True)
+
+        existing_plan = json.loads(project.get("plan_json") or "{}")
+        keys = get_effective_keys(db_path)
+
+        def progress_cb(done, total):
+            pct = int((done / max(total, 1)) * 60)
+            repo.update_project(db_path, project_id, progress=pct,
+                                 status_message=f"실패 배치 재시도 중... ({done}/{total})")
+
+        plan_updates, new_errors = translator.retry_failed_batches(
+            keys["anthropic"], anthropic_model, extracted, lang_code, lang_meta, failed_batches,
+            reference_extracted=reference_extracted, progress_cb=progress_cb,
+        )
+        existing_plan.update(plan_updates)
+
+        repo.update_project(db_path, project_id, progress=70, status_message="PPT 파일에 번역 반영 중...")
+        out_dir = os.path.join(pdir, "translated")
+        out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta, project.get("name"))
+        out_path = os.path.join(out_dir, out_name)
+
+        applied_records, apply_flags = pptx_pipeline.apply_translation_plan(
+            project["original_path"], extracted, existing_plan, lang_code, lang_meta, out_path,
+        )
+        repo.replace_slide_texts(db_path, project_id, applied_records)
+        repo.clear_review_flags(db_path, project_id, "translation")
+        repo.add_review_flags(db_path, project_id, "translation", apply_flags)
+        if new_errors:
+            repo.add_review_flags(db_path, project_id, "translation", [
+                {"slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                 "issue": f"슬라이드 {e['slides']} 배치 재시도도 실패: {e['error']}", "severity": "error"}
+                for e in new_errors
+            ])
+        else:
+            repo.add_review_flags(db_path, project_id, "translation", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": "실패했던 배치가 모두 재시도로 성공했습니다.", "severity": "info",
+            }])
+
+        # 이번에 새로 반영된 shape만 골라 GPT 재검수 (전체 재검수는 비용 낭비이므로 생략)
+        if keys["openai"] and plan_updates:
+            retried_ids = set(plan_updates.keys())
+            qa_flags = qa_reviewer.run_translation_qa(
+                keys["openai"], os.environ.get("OPENAI_MODEL", "gpt-4o"),
+                [{"shape_id": r["shape_id"], "slide_index": r["slide_index"], "shape_name": r["shape_name"],
+                  "source_korean": r["source_korean"], "translated_text": r["translated_text"]}
+                 for r in applied_records if r["shape_id"] in retried_ids],
+            )
+            repo.add_review_flags(db_path, project_id, "translation", qa_flags)
+
+        try:
+            preview_dir = os.path.join(pdir, "preview_translated")
+            render.render_pptx_to_pngs(out_path, preview_dir, dpi=90)
+        except Exception as e:
+            repo.add_review_flags(db_path, project_id, "translation", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": f"미리보기 렌더링 실패 (LibreOffice): {e}", "severity": "info",
+            }])
+
+        repo.update_project(
+            db_path, project_id, stage="review_translation", progress=100,
+            translated_path=out_path, status_message="실패 배치 재시도 완료 — 검수 대기 중",
+            plan_json=json.dumps(existing_plan, ensure_ascii=False),
+            failed_batches_json=json.dumps([e["slides"] for e in new_errors], ensure_ascii=False),
+        )
+        repo.add_event(db_path, project_id, f"실패 배치 재시도 완료 (남은 실패: {len(new_errors)}개)")
+    except Exception as e:
+        logger.error("translation retry failed: %s", traceback.format_exc())
+        repo.update_project(db_path, project_id, stage="failed", status_message=f"번역 재시도 오류: {e}")
+        repo.add_event(db_path, project_id, f"번역 재시도 실패: {e}", level="error")
+
+
 # ────────────────────────────────────────────────────────────────────────
 # 4단계: 타입캐스트 음성 생성
 # ────────────────────────────────────────────────────────────────────────
 def run_tts_stage(db_path, projects_dir, project_id, voice_id, typecast_model="ssfm-v30",
-                   audio_format="wav", language=None, emotion_type=None):
+                   audio_format="wav", language=None, emotion_type=None, only_failed=False):
     try:
         repo.update_project(db_path, project_id, stage="tts_running", progress=0,
                              status_message="음성 생성 준비 중...")
         project = repo.get_project(db_path, project_id)
-        slide_texts = repo.list_slide_texts(db_path, project_id)
 
-        by_slide = {}
-        for r in slide_texts:
-            if r["translated_text"]:
-                by_slide.setdefault(r["slide_index"], []).append(r["translated_text"])
-        slide_scripts = [(idx, ". ".join(texts)) for idx, texts in sorted(by_slide.items())]
-
-        repo.replace_audio_assets_pending(db_path, project_id, slide_scripts)
-        assets = repo.list_audio_assets(db_path, project_id)
+        if only_failed:
+            # 이미 성공(status='done')한 슬라이드는 그대로 두고, 실패한 것만 다시 합성한다
+            # (전체를 지우고 새로 만드는 기존 방식은 성공한 슬라이드까지 타입캐스트 비용을
+            # 다시 써야 해서 낭비였다).
+            all_assets = repo.list_audio_assets(db_path, project_id)
+            assets = [a for a in all_assets if a["status"] != "done"]
+            if not assets:
+                repo.update_project(db_path, project_id, stage="tts_review", progress=100,
+                                     status_message="재시도할 실패 슬라이드가 없습니다 (모두 완료 상태).")
+                repo.add_event(db_path, project_id, "음성 재시도 대상 없음 — 모두 완료 상태")
+                return
+            repo.add_event(db_path, project_id, f"실패한 오디오만 재시도 시작 ({len(assets)}개 슬라이드)")
+        else:
+            slide_texts = repo.list_slide_texts(db_path, project_id)
+            by_slide = {}
+            for r in slide_texts:
+                if r["translated_text"]:
+                    by_slide.setdefault(r["slide_index"], []).append(r["translated_text"])
+            slide_scripts = [(idx, ". ".join(texts)) for idx, texts in sorted(by_slide.items())]
+            repo.replace_audio_assets_pending(db_path, project_id, slide_scripts)
+            assets = repo.list_audio_assets(db_path, project_id)
 
         keys = get_effective_keys(db_path)
         pdir = _project_dir(projects_dir, project_id)

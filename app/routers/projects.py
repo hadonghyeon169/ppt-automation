@@ -126,6 +126,24 @@ def start_translation(project_id):
     return redirect(url_for("projects.detail", project_id=project_id))
 
 
+@bp.route("/projects/<int:project_id>/translate/retry-failed", methods=["POST"])
+@login_required
+def retry_translation_failed(project_id):
+    db_path = current_app.config["DB_PATH"]
+    projects_dir = current_app.config["PROJECTS_DIR"]
+    languages = current_app.config["LANGUAGES"]
+    model = current_app.config["ANTHROPIC_MODEL"]
+
+    t = threading.Thread(
+        target=pipeline_runner.retry_failed_translation_batches,
+        args=(db_path, projects_dir, project_id, languages, model),
+        daemon=True,
+    )
+    t.start()
+    flash("실패했던 배치만 재시도합니다. (성공한 배치는 다시 호출하지 않습니다)", "success")
+    return redirect(url_for("projects.detail", project_id=project_id))
+
+
 @bp.route("/projects/<int:project_id>/translation/confirm", methods=["POST"])
 @login_required
 def confirm_translation(project_id):
@@ -179,6 +197,30 @@ def tts_setup(project_id):
         return redirect(url_for("projects.detail", project_id=project_id))
 
     return render_template("tts_setup.html", project=project, voices=voices, voice_error=voice_error)
+
+
+@bp.route("/projects/<int:project_id>/tts/retry-failed", methods=["POST"])
+@login_required
+def tts_retry_failed(project_id):
+    db_path = current_app.config["DB_PATH"]
+    projects_dir = current_app.config["PROJECTS_DIR"]
+    assets = repo.list_audio_assets(db_path, project_id)
+    done = [a for a in assets if a["status"] == "done" and a.get("voice_id")]
+    if not done:
+        flash("이전에 성공한 오디오가 없어 사용할 보이스를 알 수 없습니다. 음성 생성을 처음부터 다시 진행해주세요.", "error")
+        return redirect(url_for("projects.detail", project_id=project_id))
+    voice_id = done[-1]["voice_id"]
+    ext = os.path.splitext(done[-1]["file_path"] or "")[1].lstrip(".") or "wav"
+
+    t = threading.Thread(
+        target=pipeline_runner.run_tts_stage,
+        args=(db_path, projects_dir, project_id, voice_id),
+        kwargs={"audio_format": ext, "only_failed": True},
+        daemon=True,
+    )
+    t.start()
+    flash("실패한 슬라이드만 재시도합니다. (이미 성공한 오디오는 다시 만들지 않습니다)", "success")
+    return redirect(url_for("projects.detail", project_id=project_id))
 
 
 @bp.route("/projects/<int:project_id>/final/run", methods=["POST"])
