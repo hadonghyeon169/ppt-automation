@@ -20,7 +20,7 @@ def get_user_by_username(db_path, username):
 
 def create_user(db_path, username, password_hash, role="admin"):
     c = _conn(db_path)
-    c.execute("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
+    c.execute("INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?,?,?)",
                (username, password_hash, role))
     c.commit()
     c.close()
