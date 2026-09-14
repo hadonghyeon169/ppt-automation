@@ -20,4 +20,4 @@ COPY . .
 ENV DATA_DIR=/data
 
 EXPOSE 8000
-CMD ["gunicorn", "-w", "2", "--threads", "4", "--timeout", "300", "-b", "0.0.0.0:8000", "wsgi:app"]
+CMD gunicorn -w 2 --threads 4 --timeout 300 -b 0.0.0.0:${PORT:-8000} wsgi:app
