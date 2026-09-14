@@ -54,8 +54,39 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             bold_category = plan.get("bold_category", "plain")
             force_bold = True if bold_category == "mixed_bold" else False
             force_sz_pt = plan.get("force_font_size_pt")
-            force_sz = int(force_sz_pt * 100) if force_sz_pt else None
             is_white = meta["is_white_text"]
+
+            # ── 폰트 크기 사전 검증(word-wrap 도형만) ──────────────────────
+            # force_font_size_pt(언어별 정밀 규칙 또는 AI 판단)는 이 PPT 템플릿의
+            # 실제 도형 크기를 모르는 상태에서 나온 "권장값"일 뿐이다. wrap="square"
+            # (또는 wrap 속성 없음 = 기본값 square) 도형은 실제 cy(높이) 기준으로
+            # 텍스트가 들어가는지 검증하고, 넘치면 폰트를 줄인다. 그동안 이 검증이
+            # 전혀 없어서(예전엔 wrap="none" 도형만 넘침 보정) 말풍선/라벨/본문
+            # 텍스트가 도형을 넘어가는 문제(텍스트가 너무 크거나 길어서 안 맞음)가
+            # 있었다.
+            requested_pt = force_sz_pt or (meta["font_sizes_pt"][0] if meta["font_sizes_pt"] else 18)
+            fit_note = None
+            if meta["xfrm_emu"] and meta["wrap"] != "none":
+                text_for_fit = (
+                    translated_paragraphs
+                    if (meta["paragraph_count"] > 1 and translated_paragraphs)
+                    else translated_text
+                )
+                fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
+                    text_for_fit, requested_pt,
+                    meta["xfrm_emu"]["cx"], meta["xfrm_emu"]["cy"],
+                )
+                if fitted_pt < requested_pt:
+                    if overflow_unresolved:
+                        fit_note = (
+                            f"번역 텍스트가 도형 크기에 비해 너무 깁니다 (최소 {fitted_pt}pt로 "
+                            f"줄여도 넘칠 수 있음 — 텍스트를 줄이거나 도형 크기를 수동으로 확인해주세요)."
+                        )
+                    else:
+                        fit_note = f"도형 크기에 맞춰 폰트를 {requested_pt}pt → {fitted_pt}pt로 자동 축소했습니다."
+                    force_sz_pt = fitted_pt
+
+            force_sz = int(force_sz_pt * 100) if force_sz_pt else None
             # force_color: AI가 언어별 정밀 스타일 규칙에 따라 "white"/"black"을 지정한
             # 경우에만 채워진다. null이면 기존처럼 원본 도형 색을 그대로 유지한다.
             raw_force_color = plan.get("force_color")
@@ -107,6 +138,14 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     "source_text": meta["full_text"], "translated_text": translated_text,
                     "issue": plan.get("note") or "모델이 검수가 필요하다고 표시함",
                     "severity": "warning",
+                })
+
+            if fit_note:
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                    "source_text": meta["full_text"], "translated_text": translated_text,
+                    "issue": fit_note,
+                    "severity": "warning" if "확인해주세요" in fit_note else "info",
                 })
 
             translated_sp_on_slide.append((sp, meta, translated_text or " ".join(translated_paragraphs or [])))

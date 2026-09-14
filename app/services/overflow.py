@@ -54,6 +54,58 @@ def compute_overflow_ratio(text, font_size_pt, shape_cx_emu):
     return width / shape_cx_emu
 
 
+LINE_SPACING_FACTOR = 1.25  # 줄간격 근사치 (폰트 크기 대비 배수)
+USABLE_WIDTH_RATIO = 0.94   # 도형 내부 여백(lIns/rIns) 근사 차감
+USABLE_HEIGHT_RATIO = 0.88  # 도형 내부 여백(tIns/bIns) + 줄바꿈 근사오차 대비 차감
+
+
+def estimate_line_count(text, font_size_pt, box_cx_emu):
+    """word-wrap 도형에서 텍스트가 실제로 몇 줄로 감길지 근사한다.
+    명시적 개행(\\n)은 각각 최소 한 줄로 세고, 각 줄 안에서는 폭 기준으로 자동
+    줄바꿈되는 횟수를 ceil(텍스트폭 / 도형폭)으로 근사한다."""
+    if not text:
+        return 1
+    usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
+    total_lines = 0
+    for raw_line in text.split("\n"):
+        if not raw_line.strip():
+            total_lines += 1
+            continue
+        width = estimate_text_width_emu(raw_line, font_size_pt)
+        total_lines += max(1, -(-width // usable_cx))  # ceil division
+    return max(1, total_lines)
+
+
+def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_cy_emu,
+                          min_font_size_pt=10, line_spacing=LINE_SPACING_FACTOR):
+    """word-wrap 도형(wrap != "none")용: 도형 실제 높이(cy)에 텍스트가 들어갈 때까지
+    폰트 크기를 1pt씩 낮춘다. AI가 제안한 force_font_size_pt는 이 PPT 템플릿의 실제
+    도형 크기를 모른 채 나온 "권장값"일 뿐이므로, 여기서 실제 크기 기준으로 최종
+    검증/보정한다.
+
+    text_or_lines: 문자열 하나 또는 문단 리스트(문단은 줄바꿈으로 취급).
+    반환: (fitted_font_size_pt, overflow_unresolved: bool)
+    overflow_unresolved=True면 min_font_size_pt까지 낮춰도 넘친다는 뜻 (수동 확인 필요)."""
+    if not box_cx_emu or not box_cy_emu:
+        return requested_font_size_pt, False
+    if isinstance(text_or_lines, (list, tuple)):
+        full_text = "\n".join(t for t in text_or_lines if t)
+    else:
+        full_text = text_or_lines or ""
+    if not full_text.strip():
+        return requested_font_size_pt, False
+
+    usable_cy = max(int(box_cy_emu * USABLE_HEIGHT_RATIO), 1)
+    size = requested_font_size_pt
+    while size >= min_font_size_pt:
+        lines = estimate_line_count(full_text, size, box_cx_emu)
+        est_height = lines * size * line_spacing * EMU_PER_PT
+        if est_height <= usable_cy:
+            return size, False
+        size -= 1
+    return min_font_size_pt, True
+
+
 def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu, max_width_ratio=0.92):
     """독립적인 제목/안내문 도형: 폭을 늘리고 정렬 기준으로 x를 재조정."""
     est_width = estimate_text_width_emu(text, font_size_pt)
