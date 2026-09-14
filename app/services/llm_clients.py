@@ -13,7 +13,7 @@ class LLMError(Exception):
     pass
 
 
-def call_claude(api_key, model, system_prompt, user_content, max_tokens=8000, temperature=0.2):
+def call_claude(api_key, model, system_prompt, user_content, max_tokens=8000, temperature=None):
     if not api_key:
         raise LLMError("Claude API 키가 설정되어 있지 않습니다. 설정 페이지에서 등록해주세요.")
     headers = {
@@ -24,10 +24,14 @@ def call_claude(api_key, model, system_prompt, user_content, max_tokens=8000, te
     payload = {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_content}],
     }
+    # claude-sonnet-5 등 최신 모델은 temperature 키가 요청에 "존재하기만 해도"
+    # 400 오류("temperature is deprecated for this model")를 낸다 (값이 아니라
+    # 필드 존재 여부로 판단). 그래서 명시적으로 값이 주어졌을 때만 페이로드에 넣는다.
+    if temperature is not None:
+        payload["temperature"] = temperature
     resp = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=180)
     if resp.status_code != 200:
         raise LLMError(f"Claude API 오류 ({resp.status_code}): {resp.text[:500]}")
