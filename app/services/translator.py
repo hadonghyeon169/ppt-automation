@@ -12,7 +12,10 @@ from .slide_extractor import classify_shape_type
 
 logger = logging.getLogger(__name__)
 
-SLIDES_PER_BATCH = 4
+SLIDES_PER_BATCH = 3
+# 4에서 3으로 낮췄다: 언어별 정밀 스타일 규칙(force_color/force_font_size_pt 등)이
+# 늘면서 shape당 출력 JSON이 길어져, 도형이 많은 슬라이드가 낀 배치에서
+# max_tokens(16000)를 넘겨 응답이 잘리는 경우가 있었다 (Unterminated string 오류).
 
 
 def _slide_to_prompt_payload(slide):

@@ -13,7 +13,7 @@ class LLMError(Exception):
     pass
 
 
-def call_claude(api_key, model, system_prompt, user_content, max_tokens=8000, temperature=None):
+def call_claude(api_key, model, system_prompt, user_content, max_tokens=16000, temperature=None):
     if not api_key:
         raise LLMError("Claude API 키가 설정되어 있지 않습니다. 설정 페이지에서 등록해주세요.")
     headers = {
@@ -36,6 +36,14 @@ def call_claude(api_key, model, system_prompt, user_content, max_tokens=8000, te
     if resp.status_code != 200:
         raise LLMError(f"Claude API 오류 ({resp.status_code}): {resp.text[:500]}")
     data = resp.json()
+    # stop_reason이 "max_tokens"면 응답이 중간에 잘린 것이다 (JSON이 깨져서
+    # "Unterminated string"/"Expecting ',' delimiter" 같은 혼란스러운 파싱
+    # 오류로 이어지기 전에 여기서 바로 명확한 원인을 알려준다).
+    if data.get("stop_reason") == "max_tokens":
+        raise LLMError(
+            f"Claude 응답이 max_tokens({max_tokens}) 제한에 걸려 중간에 잘렸습니다. "
+            "배치당 슬라이드 수를 줄이거나 max_tokens를 더 늘려야 합니다."
+        )
     parts = data.get("content", [])
     text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
     return text
