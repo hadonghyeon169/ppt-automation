@@ -76,7 +76,7 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
 
         repo.update_project(db_path, project_id, progress=75, status_message="PPT 파일에 번역 반영 중...")
         out_dir = os.path.join(pdir, "translated")
-        out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta["label"])
+        out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta, project.get("name"))
         out_path = os.path.join(out_dir, out_name)
 
         applied_records, apply_flags = pptx_pipeline.apply_translation_plan(

@@ -56,22 +56,29 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             force_sz_pt = plan.get("force_font_size_pt")
             force_sz = int(force_sz_pt * 100) if force_sz_pt else None
             is_white = meta["is_white_text"]
+            # force_color: AI가 언어별 정밀 스타일 규칙에 따라 "white"/"black"을 지정한
+            # 경우에만 채워진다. null이면 기존처럼 원본 도형 색을 그대로 유지한다.
+            raw_force_color = plan.get("force_color")
+            force_color = raw_force_color if raw_force_color in ("white", "black") else None
 
             try:
                 if meta["paragraph_count"] > 1 and translated_paragraphs:
                     ops.apply_multi_paragraph(
                         sp, translated_paragraphs, lang_code, lang_meta["font"],
                         is_complex=lang_meta["complex_script"], force_sz=force_sz,
+                        force_color=force_color,
                     )
                 elif is_white:
                     ops.restore_shape_translation(
                         sp, translated_text, lang_code, lang_meta["font"],
                         is_complex=lang_meta["complex_script"], force_sz=force_sz, force_bold=force_bold,
+                        force_color=force_color,
                     )
                 else:
                     ops.apply_shape_level(
                         sp, translated_text, lang_code, lang_meta["font"],
                         is_complex=lang_meta["complex_script"], force_sz=force_sz, force_bold=force_bold,
+                        force_color=force_color,
                     )
             except Exception as e:
                 review_flags.append({
@@ -147,6 +154,10 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
     return applied_records, review_flags
 
 
-def make_output_filename(original_filename, lang_label):
-    base = os.path.splitext(original_filename)[0]
-    return f"{base}_{lang_label}.pptx"
+def make_output_filename(original_filename, lang_meta, project_name=None):
+    """"PPT 강의 제작 인수인계서" 1-3 저장 규칙([국적] 초급n n과 과제목)을 최대한 따른다.
+    프로젝트 이름을 그 형식(예: '초급1 3과 자기소개')으로 입력해두면 그대로 재현되고,
+    비워두면 원본 파일명을 대신 사용한다."""
+    base = (project_name or "").strip() or os.path.splitext(original_filename)[0]
+    code = lang_meta.get("country_code") or lang_meta.get("label", "")
+    return f"[{code}] {base}.pptx"

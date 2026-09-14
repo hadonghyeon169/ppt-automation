@@ -2,7 +2,17 @@
 culturefi-ppt-translation 스킬 문서의 규칙을 LLM 시스템 프롬프트용으로 압축한 버전.
 전체 원문은 스킬 파일 자체에 있으며, 여기서는 "번역 판단"에 꼭 필요한 규칙만 추린다.
 실제 XML 반영(볼드/색상/폰트 적용)은 코드가 결정론적으로 수행하므로, 모델에게는
-"무엇을 어떻게 번역할지"와 "볼드/색상 카테고리"만 판단하게 한다.
+"무엇을 어떻게 번역할지"와 "볼드/색상/크기 카테고리"만 판단하게 한다.
+
+2026-09: 회사 실제 업무 문서("PPT 강의 제작 인수인계서", "러시아 번역 프롬프트.md")를
+반영해 아래 3가지를 보강했다.
+  1) CORE_RULES: 모든 언어 공통으로 적용되는 규칙 추가 (받침 처리, 반복 문구 통일,
+     표지/마무리 슬라이드 제외, 일반 크기/위치 규칙)
+  2) LANGUAGE_STYLE_RULES: 언어별 "정밀 스타일 규칙" (라벨별 색상/크기/위치 등).
+     현재는 러시아어(ru-RU)만 실제 업무 문서 기준으로 채워져 있다. 다른 언어의
+     정밀 규칙 문서가 오면 이 딕셔너리에 항목만 추가하면 된다 (다른 파일은 안 건드려도 됨).
+  3) FIXED_PHRASES / LABEL_TRANSLATIONS: 언어별로 항상 동일하게 고정 번역해야 하는
+     문구/라벨 단어 (예: "따라서 말해보세요." → 러시아어 "Повторяйте за мной.").
 """
 
 CORE_RULES = """\
@@ -17,6 +27,8 @@ CORE_RULES = """\
    중국어는 오직 "이 도형이 번역되어야 할 위치"를 알려주는 힌트로만 참고한다.
 2. '번역' 도형이 아니고 중국어도 없는 순수 한국어 도형은 절대 건드리지 않는다 (원문 그대로 유지).
 3. 도형 이름에 '번역'이 없어도 텍스트에 중국어가 포함되어 있으면 반드시 번역 대상이다.
+   (도형 이름은 "TextBox", "직사각형 16", "모서리가 둥근 직사각형" 등 제각각일 수 있으므로
+   이름이 아니라 "번역되어야 할 언어가 들어있는가"로 판단한다.)
 4. shape_name에 '번역'이 포함되지만 텍스트가 한국어뿐이고 중국어가 없는 경우:
    - 같은 슬라이드에 "동일한 의미의" 중국어 도형이 별도로 있으면 → 이 한국어 도형은
      청취 연습/지시문이므로 건드리지 않는다 (action=skip).
@@ -34,6 +46,21 @@ CORE_RULES = """\
 8. 한국어 고유명사(인명, 지명 등)는 번역하지 않고 원문을 유지한다.
 9. 텍스트 길이: 목표 언어 텍스트는 중국어 원문보다 훨씬 길어지는 경우가 대부분이다.
    지나치게 장황하게 의역하지 말고, 강의 슬라이드에 들어갈 수 있는 간결한 문장으로 번역한다.
+10. "받침"이라는 단어는 어떤 목표 언어로도 번역하지 않는다. 문법 구조 설명 문장 안에
+    한글 "받침" 그대로 끼워 넣는다 (예: "Существительное с 받침 + '이라고 하다'"처럼
+    목표 언어 문장 속에 한글 단어가 그대로 섞여 들어가는 것이 정상이다. 대체 표현을
+    만들어내지 않는다).
+11. 프레젠테이션 전체에서 반복되는 공통 안내 문구(예: "따라서 말해보세요.", "책을
+    펴세요" 류)는 항상 동일한 번역으로 통일한다. 아래 "고정 번역 문구" 목록에 있는
+    문구는 그 번역을 그대로 사용하고, 목록에 없는 반복 문구라도 이미 이전 배치에서
+    다르게 번역했을 가능성이 있다고 판단되면 note에 남겨 사람이 통일 여부를 확인하게 한다.
+12. 표지 슬라이드(예: "WELCOME!"처럼 로고성 영어 타이틀만 있는 슬라이드)나 마무리
+    슬라이드처럼, 애초에 번역해야 할 한국어/중국어 텍스트가 전혀 없는 슬라이드는
+    절대 건드리지 않는다 (해당 도형은 action=skip).
+13. 번역 텍스트 크기는 한국어 원문보다 작아야 하며, 아래 "언어별 정밀 스타일 규칙"에
+    별도 지정이 없는 한 24pt를 넘지 않는다 (force_font_size_pt로 지정). 위치는
+    기본적으로 한국어 텍스트 아래(또는 바로 인접한 자리)에 오도록 하며, 언어별 정밀
+    규칙이 다른 위치(예: 오른쪽)를 지시하면 그것을 따르고 필요하면 note에 남긴다.
 
 # 볼드(bold) 판단
 - 번역 결과 텍스트가 "순수 목표 언어"(한국어가 전혀 섞이지 않음)면 bold_category="plain"
@@ -41,11 +68,89 @@ CORE_RULES = """\
 - 번역 결과 텍스트에 한국어가 섞여 있으면(공식/문법 참조 도형 등) bold_category="mixed_bold"
   (렌더링 시 볼드 강제 적용됨).
 
+# 색상(force_color) 판단
+- 기본값은 null이다 (원본 도형의 색을 그대로 유지 — 대부분의 경우 이게 맞다).
+- 아래 "언어별 정밀 스타일 규칙"에 "이 라벨/문구는 무조건 흰색(또는 검정색)"이라고
+  명시된 경우에만 force_color를 "white" 또는 "black"으로 채운다. 그 외에는 항상 null.
+
 # 확신이 없을 때
 - 어떤 도형을 번역해야 할지, 혹은 번역문이 맞는지 확신이 서지 않으면 반드시
   needs_review=true 로 표시하고 note에 이유를 한국어로 간단히 적는다. 무리해서 추측하지
   말고 표시만 해도 된다 (사람이 검수 단계에서 확인한다).
 """
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 언어별 정밀 스타일 규칙 (실제 업무 문서 기준). 문서가 없는 언어는 CORE_RULES의
+# 일반 규칙(13번)만 적용된다. 새 언어 문서가 오면 이 딕셔너리에 항목만 추가하면 된다.
+# ────────────────────────────────────────────────────────────────────────
+LANGUAGE_STYLE_RULES = {
+    "ru-RU": """\
+1. 여자 캐릭터가 있는 슬라이드의 말풍선 번역: force_font_size_pt=32
+   (말풍선을 넘어가면 28까지 줄여도 된다 — 말풍선을 넘지 않게 만드는 것이 원칙).
+2. "과 제목을 소개하는 두 번째 슬라이드"(표지 다음, 본문 시작 전 제목 슬라이드)의
+   번역 텍스트: force_color="white".
+3. "따라서 말해보세요." 문구의 번역: force_color="white", force_font_size_pt=32.
+4. "따라서 말해보세요." 바로 아래에 있는 문장의 번역: force_color="black",
+   force_font_size_pt=24.
+5. 문법 슬라이드에서 "구조"/"예문" 항목의 실제 내용(구조 설명, 예문 문장) 번역:
+   force_color="black", force_font_size_pt=18.
+6. '정의' 라벨 단어 자체의 번역: force_color="white", force_font_size_pt=14.
+   '정의' 라벨 아래 정의 내용 번역: force_color="white", force_font_size_pt=24.
+7. '구조', '예문' 라벨 단어 자체의 번역: force_color="white", force_font_size_pt=28.
+   이 라벨 번역의 위치는 한국어 라벨의 오른쪽이어야 한다 (아래가 아님 — 13번 일반
+   규칙의 예외). 위치 조정이 필요해 보이면 note에 남겨라.
+8. 삽입 이미지 아래에 붙는 한국어 박스에 대응하는 러시아어 번역: 반드시 한 줄로
+   표기하고, 그 슬라이드의 한국어 텍스트 크기보다 4pt 작게 force_font_size_pt를
+   지정한다 (예: 한국어가 20pt면 번역은 16).
+""",
+}
+
+FIXED_PHRASES = {
+    "ru-RU": {
+        "따라서 말해보세요.": "Повторяйте за мной.",
+    },
+}
+
+LABEL_TRANSLATIONS = {
+    "ru-RU": {
+        "정의": "【Определение】",
+        "구조": "【Структура】",
+        "예문": "【Примеры】",
+    },
+}
+
+
+def _style_block(lang_code):
+    rules = LANGUAGE_STYLE_RULES.get(lang_code)
+    if not rules:
+        return ""
+    return f"""
+
+# 언어별 정밀 스타일 규칙 (아래는 위 일반 규칙 13번보다 우선 적용됨)
+{rules}"""
+
+
+def _fixed_phrase_block(lang_code):
+    phrases = FIXED_PHRASES.get(lang_code)
+    if not phrases:
+        return ""
+    lines = "\n".join(f'- "{src}" → "{dst}"' for src, dst in phrases.items())
+    return f"""
+
+# 고정 번역 문구 (아래 문구가 나오면 반드시 이 번역을 그대로 사용, 의역 금지)
+{lines}"""
+
+
+def _label_translation_block(lang_code):
+    labels = LABEL_TRANSLATIONS.get(lang_code)
+    if not labels:
+        return ""
+    lines = "\n".join(f'- "{src}" → "{dst}"' for src, dst in labels.items())
+    return f"""
+
+# 고정 라벨 번역 (라벨 단어 자체를 번역할 때 반드시 이 번역을 그대로 사용)
+{lines}"""
 
 
 def build_system_prompt(lang_label, font_name, lang_code, is_complex_script, reference_hint=None):
@@ -67,6 +172,9 @@ def build_system_prompt(lang_label, font_name, lang_code, is_complex_script, ref
 """
 
     return f"""{CORE_RULES}
+{_style_block(lang_code)}
+{_fixed_phrase_block(lang_code)}
+{_label_translation_block(lang_code)}
 
 # 이번 작업 대상 언어
 - 언어: {lang_label}
@@ -85,7 +193,8 @@ def build_system_prompt(lang_label, font_name, lang_code, is_complex_script, ref
       "translated_text": "<번역 결과. paragraph_texts가 2개 이상이면 대신 translated_paragraphs 사용>",
       "translated_paragraphs": ["<문단1 번역>", "<문단2 번역>", "..."] ,
       "bold_category": "plain" | "mixed_bold",
-      "force_font_size_pt": <숫자 또는 null, 특별히 작게 강제해야 할 경우만>,
+      "force_font_size_pt": <숫자 또는 null, 특별히 작게(혹은 정밀 규칙대로) 강제해야 할 경우만>,
+      "force_color": "white" | "black" | null,
       "needs_review": true | false,
       "note": "<판단 근거나 불확실한 점, 없으면 빈 문자열>"
     }}

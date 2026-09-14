@@ -103,8 +103,10 @@ def _set_or_create(rPr, tag, typeface, extra=None):
 
 
 def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex=False,
-                       force_sz=None, force_bold=None):
-    """일반(흰색 아님) 도형 번역 적용. 여러 run은 첫 run으로 합치고 나머지는 비운다."""
+                       force_sz=None, force_bold=None, force_color=None):
+    """일반(흰색 아님) 도형 번역 적용. 여러 run은 첫 run으로 합치고 나머지는 비운다.
+    force_color("white"|"black"|None): 언어별 정밀 스타일 규칙이 색을 강제 지정한 경우만
+    사용. None이면 기존 동작(테마 기본색을 따르도록 solidFill 제거) 그대로."""
     all_runs = list(sp_elem.iter(qn('a:r')))
     if not all_runs:
         return
@@ -118,8 +120,11 @@ def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex
             rPr.set('sz', str(int(force_sz)))
     rPr = all_runs[0].find(qn('a:rPr'))
     if rPr is not None:
-        for sf in list(rPr.findall(qn('a:solidFill'))):
-            rPr.remove(sf)
+        if force_color in ('white', 'black'):
+            force_run_color(rPr, 'FFFFFF' if force_color == 'white' else '000000')
+        else:
+            for sf in list(rPr.findall(qn('a:solidFill'))):
+                rPr.remove(sf)
     for run in all_runs[1:]:
         t = run.find(qn('a:t'))
         if t is not None:
@@ -127,8 +132,10 @@ def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex
 
 
 def restore_shape_translation(sp_elem, translated_text, lang_code, font_name, is_complex=False,
-                               force_sz=None, force_bold=None):
-    """흰색(배경색 강조) 도형 번역 적용 — solidFill을 건드리지 않아 색상을 보존한다."""
+                               force_sz=None, force_bold=None, force_color=None):
+    """흰색(배경색 강조) 도형 번역 적용 — 기본적으로 solidFill을 건드리지 않아 색상을
+    보존한다. force_color가 명시된 경우에만("white"|"black") 색을 명시적으로 덮어쓴다
+    (예: 원래 흰색이었지만 정밀 규칙상 검정으로 바꿔야 하는 라벨)."""
     all_runs = list(sp_elem.iter(qn('a:r')))
     if not all_runs:
         return
@@ -140,13 +147,18 @@ def restore_shape_translation(sp_elem, translated_text, lang_code, font_name, is
         rPr = all_runs[0].find(qn('a:rPr'))
         if rPr is not None:
             rPr.set('sz', str(int(force_sz)))
+    if force_color in ('white', 'black'):
+        rPr = all_runs[0].find(qn('a:rPr'))
+        if rPr is not None:
+            force_run_color(rPr, 'FFFFFF' if force_color == 'white' else '000000')
     for run in all_runs[1:]:
         t = run.find(qn('a:t'))
         if t is not None:
             t.text = ''
 
 
-def apply_multi_paragraph(sp_elem, line_translations, lang_code, font_name, is_complex=False, force_sz=None):
+def apply_multi_paragraph(sp_elem, line_translations, lang_code, font_name, is_complex=False,
+                           force_sz=None, force_color=None):
     """여러 <a:p> 문단으로 나뉜 도형(예: 강의 소개) 번역 — 문단별로 번역문을 배치."""
     txBody = sp_elem.find(qn('p:txBody'))
     if txBody is None:
@@ -165,6 +177,10 @@ def apply_multi_paragraph(sp_elem, line_translations, lang_code, font_name, is_c
             rPr = runs[0].find(qn('a:rPr'))
             if rPr is not None:
                 rPr.set('sz', str(int(force_sz)))
+        if force_color in ('white', 'black'):
+            rPr = runs[0].find(qn('a:rPr'))
+            if rPr is not None:
+                force_run_color(rPr, 'FFFFFF' if force_color == 'white' else '000000')
         for run in runs[1:]:
             t = run.find(qn('a:t'))
             if t is not None:
