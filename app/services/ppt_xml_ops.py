@@ -281,6 +281,105 @@ def get_paragraph_align(sp_elem):
     return pPr.get('algn')
 
 
+AUDIO_ICON_SIZE_EMU = 365760  # 0.4in — 슬라이드에 삽입되는 오디오 아이콘 크기
+
+
+def embed_autoplay_audio(slide, audio_path, mime_type, slide_width_emu, slide_height_emu):
+    """슬라이드에 오디오 파일을 삽입하고, 슬라이드 진입 시 자동 재생되도록
+    <p:timing> 타이밍 트리를 추가한다 (PowerPoint에서 "시작: 자동 실행"으로 오디오를
+    넣었을 때와 동일한 구조). python-pptx의 add_movie()는 미디어 파트/관계 생성까지만
+    해주고 자동재생 타이밍은 만들어주지 않으므로 이 함수에서 보강한다."""
+    slide_w, slide_h = slide_width_emu, slide_height_emu
+    size = AUDIO_ICON_SIZE_EMU
+    margin = 91440  # 0.1in
+    left = slide_w - size - margin
+    top = slide_h - size - margin
+
+    movie_shape = slide.shapes.add_movie(audio_path, left, top, size, size, mime_type=mime_type)
+    sp_elem = movie_shape._element
+
+    # add_movie()는 <a:videoFile>을 쓰는데, 오디오 파트이므로 스펙에 맞게 <a:audioFile>로 교체한다
+    # (PowerPoint/LibreOffice 모두 관대하게 처리하지만 정확한 태그를 쓰는 게 안전하다).
+    nvPr = sp_elem.find(qn('p:nvPicPr') + '/' + qn('p:nvPr'))
+    if nvPr is not None:
+        video_file = nvPr.find(qn('a:videoFile'))
+        if video_file is not None:
+            video_file.tag = qn('a:audioFile')
+
+    shape_id = sp_elem.find(qn('p:nvPicPr') + '/' + qn('p:cNvPr')).get('id')
+    _append_autoplay_timing(slide._element, shape_id)
+    return movie_shape
+
+
+def _append_autoplay_timing(sld_elem, spid):
+    """슬라이드 진입 즉시 spid로 지정된 미디어를 1회 자동 재생하는 <p:timing> 트리 삽입.
+    CT_Slide 스키마 순서(cSld, clrMapOvr?, transition?, timing?, extLst?)를 지켜
+    올바른 위치에 넣는다."""
+    P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    timing_xml = f"""
+<p:timing xmlns:p="{P_NS}">
+  <p:tnLst>
+    <p:par>
+      <p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot">
+        <p:childTnLst>
+          <p:seq concurrent="1" nextAc="seek">
+            <p:cTn id="2" dur="indefinite" nodeType="mainSeq">
+              <p:childTnLst>
+                <p:par>
+                  <p:cTn id="3" fill="hold">
+                    <p:stCondLst><p:cond delay="indefinite"/></p:stCondLst>
+                    <p:childTnLst>
+                      <p:par>
+                        <p:cTn id="4" fill="hold">
+                          <p:stCondLst><p:cond delay="0"/></p:stCondLst>
+                          <p:childTnLst>
+                            <p:par>
+                              <p:cTn id="5" presetID="1" presetClass="mediacall" presetSubtype="0" fill="hold" nodeType="afterEffect">
+                                <p:stCondLst><p:cond delay="0"/></p:stCondLst>
+                                <p:childTnLst>
+                                  <p:cmd type="call" cmd="playFrom(0.0)">
+                                    <p:cBhvr>
+                                      <p:cTn id="6" dur="indefinite" fill="hold"/>
+                                      <p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl>
+                                    </p:cBhvr>
+                                  </p:cmd>
+                                </p:childTnLst>
+                              </p:cTn>
+                            </p:par>
+                          </p:childTnLst>
+                        </p:cTn>
+                      </p:par>
+                    </p:childTnLst>
+                  </p:cTn>
+                </p:par>
+              </p:childTnLst>
+            </p:cTn>
+            <p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>
+            <p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst>
+          </p:seq>
+        </p:childTnLst>
+      </p:cTn>
+    </p:par>
+  </p:tnLst>
+  <p:bldLst><p:bldMedia spid="{spid}"/></p:bldLst>
+</p:timing>
+""".strip()
+    new_timing = etree.fromstring(timing_xml.encode('utf-8'))
+
+    # 기존 timing이 있으면(여러 오디오를 순차 삽입하는 경우 등) 제거하고 새로 넣는다
+    # — 이 앱은 슬라이드당 오디오 1개만 다루므로 항상 교체가 맞다.
+    old_timing = sld_elem.find(qn('p:timing'))
+    if old_timing is not None:
+        sld_elem.remove(old_timing)
+
+    insert_after_tags = [qn('p:cSld'), qn('p:clrMapOvr'), qn('p:transition')]
+    insert_idx = 0
+    for i, child in enumerate(sld_elem):
+        if child.tag in insert_after_tags:
+            insert_idx = i + 1
+    sld_elem.insert(insert_idx, new_timing)
+
+
 def cleanup_duplicate_shapes(prs):
     """중복 도형 정리 (오류 대응) — 스킬 문서 "중복 도형 정리" 절 그대로."""
     removed = 0

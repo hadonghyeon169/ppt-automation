@@ -8,7 +8,7 @@ import logging
 import traceback
 
 from .. import repo
-from . import slide_extractor, translator, pptx_pipeline, render, qa_reviewer, tts_typecast
+from . import slide_extractor, translator, pptx_pipeline, render, qa_reviewer, tts_typecast, audio_embed
 
 logger = logging.getLogger(__name__)
 
@@ -257,11 +257,41 @@ def run_final_review_stage(db_path, projects_dir, project_id, languages):
                 "issue": f"음성 생성 실패: {a['error_message']}", "severity": "error",
             }])
 
-        # 3) 최종 렌더링
+        # 3) 오디오를 실제 PPT 파일에 삽입 (기존에는 이 단계가 아예 없어서 TTS로
+        # 생성된 음성이 디스크에만 저장되고 최종 PPT에는 전혀 반영되지 않았다).
+        # 슬라이드 진입 시 자동 재생되도록 삽입하고, 원본 translated 파일은 보존한
+        # 채 별도 파일로 저장한다.
+        pdir = _project_dir(projects_dir, project_id)
+        final_dir = os.path.join(pdir, "final")
+        final_name = os.path.basename(project["translated_path"])
+        final_pptx_path = os.path.join(final_dir, final_name)
         try:
-            pdir = _project_dir(projects_dir, project_id)
+            embedded_count, embed_skipped = audio_embed.embed_audio_into_pptx(
+                project["translated_path"], assets, final_pptx_path,
+            )
+            repo.add_review_flags(db_path, project_id, "final", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": f"오디오 {embedded_count}개 슬라이드에 자동재생으로 삽입 완료.",
+                "severity": "info",
+            }])
+            for s in embed_skipped:
+                repo.add_review_flags(db_path, project_id, "final", [{
+                    "slide_index": s["slide_index"], "shape_name": f"오디오(슬라이드 {s['slide_index']+1})",
+                    "source_text": None, "translated_text": None,
+                    "issue": f"오디오 삽입 건너뜀: {s['reason']}", "severity": "warning",
+                }])
+        except Exception as e:
+            logger.error("audio embed failed: %s", traceback.format_exc())
+            final_pptx_path = project["translated_path"]  # 실패 시 최소한 번역본이라도 최종본으로
+            repo.add_review_flags(db_path, project_id, "final", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": f"오디오 삽입 실패, 번역본만 최종 파일로 사용합니다: {e}", "severity": "error",
+            }])
+
+        # 4) 최종 렌더링 (오디오가 삽입된 최종 파일 기준)
+        try:
             preview_dir = os.path.join(pdir, "preview_final")
-            render.render_pptx_to_pngs(project["translated_path"], preview_dir, dpi=90)
+            render.render_pptx_to_pngs(final_pptx_path, preview_dir, dpi=90)
         except Exception as e:
             repo.add_review_flags(db_path, project_id, "final", [{
                 "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
@@ -269,7 +299,7 @@ def run_final_review_stage(db_path, projects_dir, project_id, languages):
             }])
 
         repo.update_project(db_path, project_id, stage="review_final", progress=100,
-                             final_path=project["translated_path"],
+                             final_path=final_pptx_path,
                              status_message="최종 검수 완료 — 최종 승인 대기 중")
         repo.add_event(db_path, project_id, "최종 검수 완료, 최종 승인 대기")
     except Exception as e:
