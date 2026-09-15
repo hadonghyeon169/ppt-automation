@@ -77,6 +77,11 @@
         <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
           <button class="btn secondary" type="submit">다시 번역 실행 (전체)</button>
         </form>
+        {% if project['plan_json'] %}
+        <form method="post" action="{{ url_for('projects.recheck_translation', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit" title="Claude API를 다시 호출하지 않고, 저장된 번역 결과를 최신 검사 로직으로 다시 확인합니다.">번역 누락 재검사 (API 비용 없음)</button>
+        </form>
+        {% endif %}
         {% if failed_batches_count %}
         <form method="post" action="{{ url_for('projects.retry_translation_failed', project_id=project['id']) }}">
           <button class="btn secondary" type="submit">번역 누락/실패 항목만 재시도 ({{ failed_batches_count }}개 슬라이드)</button>

@@ -236,6 +236,81 @@ def retry_failed_translation_batches(db_path, projects_dir, project_id, language
         repo.add_event(db_path, project_id, f"번역 재시도 실패: {e}", level="error")
 
 
+def recheck_translation_plan(db_path, projects_dir, project_id, languages):
+    """API를 다시 호출하지 않고, 이미 저장된 plan_json을 "지금 배포된" apply_translation_plan
+    로직으로 다시 적용만 해본다. 이 기능이 필요한 이유: 번역 누락 감지(응답에서 빠진 도형을
+    error로 표시하는 로직)는 이번에 새로 추가됐는데, 그 전에 이미 번역을 실행해둔 프로젝트는
+    번역 당시 이 감지 로직 자체가 없었기 때문에 failed_batches_json이 비어있어 "부분
+    재시도" 버튼이 안 보인다. 새로 Claude를 호출하지 않고 저장된 계획을 재적용만 해도
+    (도형이 plan에 있는지 없는지는 이미 저장된 데이터로 알 수 있으므로) 지금 로직 기준
+    누락 여부를 바로 알아낼 수 있다 — API 비용 없이 검수/재시도 버튼을 최신 상태로 맞춘다."""
+    try:
+        project = repo.get_project(db_path, project_id)
+        plan_raw = project.get("plan_json")
+        if not plan_raw:
+            repo.add_event(
+                db_path, project_id,
+                "저장된 번역 계획이 없어 재검사할 수 없습니다 (번역을 먼저 실행하세요).",
+                level="error",
+            )
+            return
+        plan_by_shape = json.loads(plan_raw)
+
+        repo.update_project(db_path, project_id, stage="translating", progress=10,
+                             status_message="저장된 번역 계획으로 재검사 중 (API 호출 없음)...")
+        repo.add_event(db_path, project_id, "번역 누락 재검사 시작 (API 재호출 없이 저장된 계획을 최신 로직으로 재적용)")
+
+        lang_code = project["target_lang"]
+        lang_meta = languages[lang_code]
+        pdir = _project_dir(projects_dir, project_id)
+
+        extracted = slide_extractor.extract_presentation(project["original_path"])
+
+        repo.update_project(db_path, project_id, progress=60, status_message="PPT 파일에 재적용 중...")
+        out_dir = os.path.join(pdir, "translated")
+        out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta, project.get("name"))
+        out_path = os.path.join(out_dir, out_name)
+
+        applied_records, apply_flags, untranslated_batches = pptx_pipeline.apply_translation_plan(
+            project["original_path"], extracted, plan_by_shape, lang_code, lang_meta, out_path,
+        )
+        repo.replace_slide_texts(db_path, project_id, applied_records)
+        repo.clear_review_flags(db_path, project_id, "translation")
+        repo.add_review_flags(db_path, project_id, "translation", apply_flags)
+
+        # 이 재검사는 API를 호출하지 않으므로 새로운 배치 실패(plan_errors)는 없다. 다만
+        # 예전에 API 호출 자체가 실패했던 도형도 plan_by_shape에 없기는 마찬가지라서,
+        # apply_translation_plan이 "응답 누락"과 동일하게 잡아내 untranslated_batches에
+        # 포함시킨다 — 따로 병합할 필요 없이 이 결과가 곧 최신 상태의 재시도 대상이다.
+        repo.update_project(
+            db_path, project_id,
+            failed_batches_json=json.dumps(untranslated_batches, ensure_ascii=False),
+        )
+
+        try:
+            preview_dir = os.path.join(pdir, "preview_translated")
+            render.render_pptx_to_pngs(out_path, preview_dir, dpi=90)
+        except Exception as e:
+            repo.add_review_flags(db_path, project_id, "translation", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": f"미리보기 렌더링 실패 (LibreOffice): {e}", "severity": "info",
+            }])
+
+        repo.update_project(
+            db_path, project_id, stage="review_translation", progress=100,
+            translated_path=out_path,
+            status_message=f"재검사 완료 (API 비용 없음) — 발견된 누락 슬라이드: {len(untranslated_batches)}개",
+        )
+        repo.add_event(
+            db_path, project_id,
+            f"번역 누락 재검사 완료 — 발견된 누락 슬라이드: {len(untranslated_batches)}개 (API 비용 없음)",
+        )
+    except Exception as e:
+        logger.error("translation recheck failed: %s", traceback.format_exc())
+        repo.update_project(db_path, project_id, stage="failed", status_message=f"재검사 오류: {e}")
+        repo.add_event(db_path, project_id, f"번역 누락 재검사 실패: {e}", level="error")
+
+
 # ────────────────────────────────────────────────────────────────────────
 # 4단계: 타입캐스트 음성 생성
 # ────────────────────────────────────────────────────────────────────────

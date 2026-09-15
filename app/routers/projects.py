@@ -150,6 +150,27 @@ def retry_translation_failed(project_id):
     return redirect(url_for("projects.detail", project_id=project_id))
 
 
+@bp.route("/projects/<int:project_id>/translate/recheck", methods=["POST"])
+@login_required
+def recheck_translation(project_id):
+    """API를 다시 호출하지 않고, 저장된 번역 계획을 최신 검사 로직으로 재적용해
+    번역 누락 여부만 다시 확인한다. 이 배포 이전에 번역을 실행한 프로젝트는 당시
+    누락 감지 로직이 없어 '부분 재시도' 버튼이 안 보일 수 있는데, 이 버튼으로
+    비용 없이 최신 상태로 맞출 수 있다."""
+    db_path = current_app.config["DB_PATH"]
+    projects_dir = current_app.config["PROJECTS_DIR"]
+    languages = current_app.config["LANGUAGES"]
+
+    t = threading.Thread(
+        target=pipeline_runner.recheck_translation_plan,
+        args=(db_path, projects_dir, project_id, languages),
+        daemon=True,
+    )
+    t.start()
+    flash("저장된 번역 결과를 최신 검사 로직으로 다시 확인합니다 (API 비용 없음).", "success")
+    return redirect(url_for("projects.detail", project_id=project_id))
+
+
 @bp.route("/projects/<int:project_id>/translation/confirm", methods=["POST"])
 @login_required
 def confirm_translation(project_id):
