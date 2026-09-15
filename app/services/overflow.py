@@ -76,16 +76,38 @@ def estimate_line_count(text, font_size_pt, box_cx_emu):
     return max(1, total_lines)
 
 
+def estimate_max_word_width_emu(text, font_size_pt):
+    """텍스트 안에서 가장 긴 '단어'(공백 기준 토큰)의 폭을 추정한다.
+    word-wrap은 단어 경계에서만 줄바꿈되므로, 특정 단어 하나의 폭이 박스 폭보다
+    크면 줄 수를 아무리 잘 배분해도 그 단어가 있는 줄은 박스 옆으로 삐져나간다.
+    estimate_line_count()는 "총 텍스트 폭 / 박스 폭"을 올림 나눗셈해서 줄 수만
+    근사하기 때문에, 이런 긴 단어 하나 때문에 생기는 가로 넘침은 잡아내지 못한다
+    (총 높이는 맞아 보이지만 특정 줄만 옆으로 튀어나오는 경우)."""
+    max_width = 0
+    for raw_line in (text or "").split("\n"):
+        for word in raw_line.split():
+            w = estimate_text_width_emu(word, font_size_pt)
+            if w > max_width:
+                max_width = w
+    return max_width
+
+
 def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_cy_emu,
                           min_font_size_pt=10, line_spacing=LINE_SPACING_FACTOR):
-    """word-wrap 도형(wrap != "none")용: 도형 실제 높이(cy)에 텍스트가 들어갈 때까지
-    폰트 크기를 1pt씩 낮춘다. AI가 제안한 force_font_size_pt는 이 PPT 템플릿의 실제
-    도형 크기를 모른 채 나온 "권장값"일 뿐이므로, 여기서 실제 크기 기준으로 최종
-    검증/보정한다.
+    """word-wrap 도형(wrap != "none")용: 도형 실제 높이(cy)에 텍스트가 들어가고,
+    동시에 가장 긴 단어 하나가 박스 폭을 벗어나지 않을 때까지 폰트 크기를 1pt씩
+    낮춘다. AI가 제안한 force_font_size_pt는 이 PPT 템플릿의 실제 도형 크기를
+    모른 채 나온 "권장값"일 뿐이므로, 여기서 실제 크기 기준으로 최종 검증/보정한다.
+
+    높이만 보고 폭의 개별 단어 넘침을 확인하지 않으면, 총 줄 수 계산상으로는
+    "들어간다"고 나와도 긴 단어 하나가 있는 줄만 박스 옆으로 삐져나가는 경우를
+    info로 잘못 분류하게 된다(실제 사례: 러시아어 긴 단어가 포함된 도형에서
+    글자가 상자 옆/밖으로 넘어가는데도 자동 축소가 "성공"으로 처리됨).
 
     text_or_lines: 문자열 하나 또는 문단 리스트(문단은 줄바꿈으로 취급).
     반환: (fitted_font_size_pt, overflow_unresolved: bool)
-    overflow_unresolved=True면 min_font_size_pt까지 낮춰도 넘친다는 뜻 (수동 확인 필요)."""
+    overflow_unresolved=True면 min_font_size_pt까지 낮춰도 (높이 또는 폭이) 넘친다는
+    뜻 (수동 확인 필요)."""
     if not box_cx_emu or not box_cy_emu:
         return requested_font_size_pt, False
     if isinstance(text_or_lines, (list, tuple)):
@@ -96,11 +118,13 @@ def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_
         return requested_font_size_pt, False
 
     usable_cy = max(int(box_cy_emu * USABLE_HEIGHT_RATIO), 1)
+    usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
     size = requested_font_size_pt
     while size >= min_font_size_pt:
         lines = estimate_line_count(full_text, size, box_cx_emu)
         est_height = lines * size * line_spacing * EMU_PER_PT
-        if est_height <= usable_cy:
+        word_width = estimate_max_word_width_emu(full_text, size)
+        if est_height <= usable_cy and word_width <= usable_cx:
             return size, False
         size -= 1
     return min_font_size_pt, True
