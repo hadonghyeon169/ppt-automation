@@ -21,7 +21,12 @@ def extract_presentation(pptx_path):
                 continue
             name = ops.get_shape_name(sp)
             cnvpr_id = ops.get_shape_cnvpr_id(sp)
-            xfrm = ops.get_shape_xfrm(sp)
+            # 그룹(p:grpSp) 안에 중첩된 도형은 로컬 xfrm이 그룹의 자식 좌표계 기준이라
+            # 그대로 쓰면 실제 슬라이드 위치/크기와 다르다 — 문법 템플릿 박스나
+            # 캐릭터+말풍선 조합처럼 그룹으로 묶인 도형에서 넘침 판정/폰트 계산이
+            # 어긋나는 원인이었으므로 절대 좌표로 변환해서 사용한다.
+            xfrm = ops.get_shape_absolute_xfrm(sp)
+            is_grouped = ops.shape_is_grouped(sp)
             wrap = ops.get_body_pr_wrap(sp)
             align = ops.get_paragraph_align(sp)
             is_white = ops.has_bg_color(sp)
@@ -63,6 +68,7 @@ def extract_presentation(pptx_path):
                 "wrap": wrap,
                 "align": align,
                 "xfrm_emu": xfrm,
+                "is_grouped": is_grouped,
             })
         slides_data.append({
             "slide_index": slide_idx,

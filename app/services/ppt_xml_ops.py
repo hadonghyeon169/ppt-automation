@@ -243,7 +243,10 @@ def set_body_pr_wrap_square_autofit(sp_elem):
 
 
 def get_shape_xfrm(sp_elem):
-    """spPr/xfrm 의 off(x,y), ext(cx,cy)를 EMU 단위로 반환. 없으면 None."""
+    """spPr/xfrm 의 off(x,y), ext(cx,cy)를 EMU 단위로 반환. 없으면 None.
+    주의: 이 도형이 그룹(p:grpSp) 안에 있으면 이 값은 슬라이드 절대 좌표가 아니라
+    그 그룹의 "자식 좌표계"(chOff/chExt) 기준이다 — 넘침/폰트 계산에는 반드시
+    get_shape_absolute_xfrm()을 사용해야 한다."""
     spPr = sp_elem.find(qn('p:spPr'))
     if spPr is None:
         return None
@@ -258,6 +261,73 @@ def get_shape_xfrm(sp_elem):
         'x': int(off.get('x')), 'y': int(off.get('y')),
         'cx': int(ext.get('cx')), 'cy': int(ext.get('cy')),
     }
+
+
+def _group_xfrm(grp_elem):
+    """p:grpSp의 grpSpPr/xfrm에서 off/ext(부모 좌표계 기준 위치·크기)와
+    chOff/chExt(자식 도형들이 사용하는 내부 좌표계)를 모두 읽는다. 하나라도
+    없으면 이 그룹은 변환을 적용할 수 없으므로 None을 반환한다."""
+    grpSpPr = grp_elem.find(qn('p:grpSpPr'))
+    if grpSpPr is None:
+        return None
+    xfrm = grpSpPr.find(qn('a:xfrm'))
+    if xfrm is None:
+        return None
+    off = xfrm.find(qn('a:off'))
+    ext = xfrm.find(qn('a:ext'))
+    chOff = xfrm.find(qn('a:chOff'))
+    chExt = xfrm.find(qn('a:chExt'))
+    if off is None or ext is None or chOff is None or chExt is None:
+        return None
+    return {
+        'x': int(off.get('x')), 'y': int(off.get('y')),
+        'cx': int(ext.get('cx')), 'cy': int(ext.get('cy')),
+        'chx': int(chOff.get('x')), 'chy': int(chOff.get('y')),
+        'chcx': int(chExt.get('cx')), 'chcy': int(chExt.get('cy')),
+    }
+
+
+def shape_is_grouped(sp_elem):
+    """이 도형이 하나 이상의 p:grpSp 안에 중첩되어 있는지 여부."""
+    node = sp_elem.getparent()
+    while node is not None:
+        if node.tag == qn('p:grpSp'):
+            return True
+        if node.tag == qn('p:spTree'):
+            return False
+        node = node.getparent()
+    return False
+
+
+def get_shape_absolute_xfrm(sp_elem):
+    """도형의 슬라이드 절대 좌표/크기(EMU)를 반환한다. 그룹(p:grpSp)에 중첩된
+    도형은 spPr/xfrm이 그룹의 자식 좌표계(chOff/chExt) 기준이라 그대로 쓰면
+    실제 위치·크기와 전혀 다를 수 있다 — 문법 템플릿 박스, 캐릭터+말풍선 조합처럼
+    그룹으로 묶인 도형에서 넘침 감지/폰트 크기 계산이 어긋나는 원인이었다.
+    조상 그룹들을 안쪽에서 바깥쪽 순서로 순회하며 각 그룹의 (off,ext,chOff,chExt)로
+    좌표를 슬라이드 절대 좌표계까지 누적 변환한다."""
+    local = get_shape_xfrm(sp_elem)
+    if local is None:
+        return None
+    x, y, cx, cy = local['x'], local['y'], local['cx'], local['cy']
+
+    node = sp_elem.getparent()
+    while node is not None:
+        if node.tag == qn('p:grpSp'):
+            g = _group_xfrm(node)
+            if g is None:
+                break  # 이 그룹에 좌표 정보가 없으면 더 이상 보정할 수 없음
+            scale_x = (g['cx'] / g['chcx']) if g['chcx'] else 1.0
+            scale_y = (g['cy'] / g['chcy']) if g['chcy'] else 1.0
+            x = g['x'] + (x - g['chx']) * scale_x
+            y = g['y'] + (y - g['chy']) * scale_y
+            cx = cx * scale_x
+            cy = cy * scale_y
+        if node.tag == qn('p:spTree'):
+            break
+        node = node.getparent()
+
+    return {'x': int(x), 'y': int(y), 'cx': int(cx), 'cy': int(cy)}
 
 
 def set_shape_xfrm(sp_elem, x=None, y=None, cx=None, cy=None):

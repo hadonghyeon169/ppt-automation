@@ -258,6 +258,18 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             try:
                 if has_adjacent:
                     ops.set_body_pr_wrap_square_autofit(sp)
+                elif meta.get("is_grouped"):
+                    # 그룹(p:grpSp) 안에 있는 도형은 xfrm이 그룹의 자식 좌표계 기준이라,
+                    # 여기서 계산한 절대 좌표로 그대로 덮어쓰면 그룹 전체가 틀어진다.
+                    # 폰트 축소는 이미 위 사전 검증 단계에서 적용됐으므로, 박스 자동
+                    # 확장은 건너뛰고 사람이 확인하도록 명확히 표시한다.
+                    review_flags.append({
+                        "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                        "source_text": meta["full_text"], "translated_text": final_text,
+                        "issue": "그룹으로 묶인 도형이라 박스 자동 확장을 건너뛰었습니다 "
+                                 "(폰트 축소는 적용됨) — 넘치는지 수동으로 확인해주세요.",
+                        "severity": "warning",
+                    })
                 else:
                     new_geo = ov.suggest_independent_shape_resize(
                         final_text, font_size, xfrm, meta["align"], slide_width,
