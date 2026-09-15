@@ -4,11 +4,15 @@
 2) 넘침(overflow) 보정 (wrap="none" 도형 폭 재계산 또는 wrap="square" 전환)
 3) 새 파일명으로 저장 (원본 보존)
 """
+import logging
 import os
+import unicodedata
 from pptx import Presentation
 
 from . import ppt_xml_ops as ops
 from . import overflow as ov
+
+logger = logging.getLogger(__name__)
 
 
 ADJACENCY_GAP_EMU_RATIO = 0.06  # 슬라이드 폭 대비, 이 이내로 다른 도형이 붙어있으면 "인접 쌍"으로 간주
@@ -180,7 +184,15 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
 
             if plan.get("needs_review"):
                 note_text = plan.get("note") or "모델이 검수가 필요하다고 표시함"
+                # 저장 시점(오래전 실행분 등)에 따라 유니코드 정규화 형태가 다를 수 있어
+                # NFC로 통일한다 — 그렇지 않으면 겉보기엔 동일한 "추정"/"말풍선" 같은
+                # 한글 문자열이 코드포인트 단위 부분 문자열 매칭에서 실패할 수 있다.
+                note_text = unicodedata.normalize("NFC", note_text)
                 model_severity = plan.get("review_severity")
+                logger.info(
+                    "needs_review note (shape=%s, model_severity=%r): %r",
+                    shape_id, model_severity, note_text,
+                )
                 if model_severity in ("info", "warning"):
                     # 최신 프롬프트는 모델이 직접 info/warning을 구분해서 내려준다 —
                     # note 문구를 추측할 필요 없이 이 값을 그대로 신뢰한다.
@@ -203,6 +215,10 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                         and any(kw in note_text for kw in UNCERTAIN_KEYWORDS)
                     )
                     severity = "info" if looks_like_font_heuristic_note else "warning"
+                    logger.info(
+                        "fallback classification (shape=%s): matched=%s -> severity=%s",
+                        shape_id, looks_like_font_heuristic_note, severity,
+                    )
                 review_flags.append({
                     "slide_index": slide_idx, "shape_name": meta["shape_name"],
                     "source_text": meta["full_text"], "translated_text": translated_text,
