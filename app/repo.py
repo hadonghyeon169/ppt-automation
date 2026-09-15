@@ -40,6 +40,13 @@ def list_users(db_path):
     return [dict(r) for r in rows]
 
 
+def update_user_password(db_path, user_id, password_hash):
+    c = _conn(db_path)
+    c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+    c.commit()
+    c.close()
+
+
 # ── api settings ─────────────────────────────────────────────────────────
 def get_api_keys(db_path):
     c = _conn(db_path)
