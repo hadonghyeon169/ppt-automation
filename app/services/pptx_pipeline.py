@@ -180,21 +180,34 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
 
             if plan.get("needs_review"):
                 note_text = plan.get("note") or "모델이 검수가 필요하다고 표시함"
-                # 러시아어 말풍선 규칙(캐릭터가 여성이면 32pt)은 소스 텍스트만으로는
-                # AI가 캐릭터 성별을 확정할 수 없어서 늘 needs_review로 표시된다.
-                # 폰트 크기는 이미 규칙대로 적용된 상태이고, 매번 반복적으로 뜨는 참고용
-                # 확인 항목이라 warning보다 눈에 덜 띄는 info로 낮춘다 (사용자 요청).
-                # 그 외 needs_review 사유(번역 품질 의심 등)는 기존대로 warning 유지.
-                is_gender_uncertain = (
-                    "캐릭터" in note_text
-                    and ("여성" in note_text or "남성" in note_text)
-                    and ("미확인" in note_text or "확인 필요" in note_text or "불확실" in note_text)
-                )
+                model_severity = plan.get("review_severity")
+                if model_severity in ("info", "warning"):
+                    # 최신 프롬프트는 모델이 직접 info/warning을 구분해서 내려준다 —
+                    # note 문구를 추측할 필요 없이 이 값을 그대로 신뢰한다.
+                    severity = model_severity
+                else:
+                    # review_severity 필드가 없는 예전 저장된 plan(재검사 등)과의 호환용
+                    # 폴백. 러시아어 말풍선 규칙(캐릭터 성별에 따라 32/24pt)은 소스
+                    # 텍스트만으로 캐릭터를 특정할 수 없어 거의 항상 needs_review로
+                    # 표시되는데, note 문구가 "여성 캐릭터 여부 미확인", "캐릭터 유무
+                    # 확인 필요", "말풍선으로 추정되어 32pt 적용", "여캐릭터", "성별
+                    # 확인 불가" 등 매번 다르게 나와서 특정 문구 하나만 걸러서는 놓치는
+                    # 경우가 많았다. 폰트는 이미 규칙대로 적용된 상태이므로 이런 자동
+                    # 판단 참고 노트는 info로, 그 외(번역 품질 의심, 위치 조정 필요 등
+                    # "말풍선"/"캐릭터" 언급이 없는 사유)는 warning으로 유지한다.
+                    UNCERTAIN_KEYWORDS = (
+                        "추정", "불명확", "불확실", "미확인", "확인 필요", "확인 불가", "여부", "임의 적용",
+                    )
+                    looks_like_font_heuristic_note = (
+                        ("말풍선" in note_text or "캐릭터" in note_text)
+                        and any(kw in note_text for kw in UNCERTAIN_KEYWORDS)
+                    )
+                    severity = "info" if looks_like_font_heuristic_note else "warning"
                 review_flags.append({
                     "slide_index": slide_idx, "shape_name": meta["shape_name"],
                     "source_text": meta["full_text"], "translated_text": translated_text,
                     "issue": note_text,
-                    "severity": "info" if is_gender_uncertain else "warning",
+                    "severity": severity,
                 })
 
             if fit_note:

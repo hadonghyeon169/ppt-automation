@@ -77,6 +77,13 @@ CORE_RULES = """\
 - 어떤 도형을 번역해야 할지, 혹은 번역문이 맞는지 확신이 서지 않으면 반드시
   needs_review=true 로 표시하고 note에 이유를 한국어로 간단히 적는다. 무리해서 추측하지
   말고 표시만 해도 된다 (사람이 검수 단계에서 확인한다).
+- needs_review=true일 때는 review_severity도 반드시 함께 지정한다:
+  - "info": 이미 규칙대로(예: 말풍선 캐릭터 성별을 알 수 없어 규칙에 따라 폰트를
+    적용한 경우처럼) 자동으로 처리를 끝냈고, note는 그 판단 근거를 남기는 참고용일
+    뿐 사람이 뭔가를 바로잡아야 하는 건 아닌 경우.
+  - "warning": 번역 자체의 정확성이 의심되거나, 라벨 위치처럼 사람이 실제로 확인해서
+    고쳐야 할 수 있는 경우.
+  같은 말풍선/캐릭터 추정 사유라도 매 도형마다 이 필드로 명확히 구분해서 표시한다.
 """
 
 
@@ -196,9 +203,11 @@ def build_system_prompt(lang_label, font_name, lang_code, is_complex_script, ref
       "force_font_size_pt": <숫자 또는 null, 특별히 작게(혹은 정밀 규칙대로) 강제해야 할 경우만>,
       "force_color": "white" | "black" | null,
       "needs_review": true | false,
+      "review_severity": "info" | "warning" | null,
       "note": "<판단 근거나 불확실한 점, 없으면 빈 문자열>"
     }}
   ]
 }}
+review_severity는 needs_review=true일 때만 "info" 또는 "warning"으로 채우고, needs_review=false면 null로 둔다.
 skip으로 표시하는 도형도 배열에 포함하세요 (판단 근거를 note에 남기면 검수에 도움이 됩니다).
 """
