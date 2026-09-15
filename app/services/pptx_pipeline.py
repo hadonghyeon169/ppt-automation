@@ -179,11 +179,22 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             })
 
             if plan.get("needs_review"):
+                note_text = plan.get("note") or "모델이 검수가 필요하다고 표시함"
+                # 러시아어 말풍선 규칙(캐릭터가 여성이면 32pt)은 소스 텍스트만으로는
+                # AI가 캐릭터 성별을 확정할 수 없어서 늘 needs_review로 표시된다.
+                # 폰트 크기는 이미 규칙대로 적용된 상태이고, 매번 반복적으로 뜨는 참고용
+                # 확인 항목이라 warning보다 눈에 덜 띄는 info로 낮춘다 (사용자 요청).
+                # 그 외 needs_review 사유(번역 품질 의심 등)는 기존대로 warning 유지.
+                is_gender_uncertain = (
+                    "캐릭터" in note_text
+                    and ("여성" in note_text or "남성" in note_text)
+                    and ("미확인" in note_text or "확인 필요" in note_text or "불확실" in note_text)
+                )
                 review_flags.append({
                     "slide_index": slide_idx, "shape_name": meta["shape_name"],
                     "source_text": meta["full_text"], "translated_text": translated_text,
-                    "issue": plan.get("note") or "모델이 검수가 필요하다고 표시함",
-                    "severity": "warning",
+                    "issue": note_text,
+                    "severity": "info" if is_gender_uncertain else "warning",
                 })
 
             if fit_note:
