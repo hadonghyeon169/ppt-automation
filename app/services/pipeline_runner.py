@@ -78,24 +78,28 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
                 for e in plan_errors
             ])
 
-        # 실패한 배치만 나중에 재시도할 수 있도록 전체 plan과 실패 배치 목록을 저장해둔다.
-        # (재시도 시 이미 성공한 배치는 API를 다시 호출하지 않고 그대로 재사용한다)
-        repo.update_project(
-            db_path, project_id,
-            plan_json=json.dumps(plan_by_shape, ensure_ascii=False),
-            failed_batches_json=json.dumps([e["slides"] for e in plan_errors], ensure_ascii=False),
-        )
+        # plan_json은 여기서 바로 저장 — failed_batches_json은 apply 단계에서 나오는
+        # "번역 누락" 슬라이드까지 합쳐서 apply 이후에 저장한다 (아래).
+        repo.update_project(db_path, project_id, plan_json=json.dumps(plan_by_shape, ensure_ascii=False))
 
         repo.update_project(db_path, project_id, progress=75, status_message="PPT 파일에 번역 반영 중...")
         out_dir = os.path.join(pdir, "translated")
         out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta, project.get("name"))
         out_path = os.path.join(out_dir, out_name)
 
-        applied_records, apply_flags = pptx_pipeline.apply_translation_plan(
+        applied_records, apply_flags, untranslated_batches = pptx_pipeline.apply_translation_plan(
             project["original_path"], extracted, plan_by_shape, lang_code, lang_meta, out_path,
         )
         repo.replace_slide_texts(db_path, project_id, applied_records)
         repo.add_review_flags(db_path, project_id, "translation", apply_flags)
+
+        # 실패한 배치(API 호출 자체가 에러)와 번역이 누락된 슬라이드(응답엔 있었지만
+        # 이 도형이 빠졌거나 결과가 비었던 경우)를 합쳐 "부분 재번역" 대상으로 저장한다.
+        all_retry_batches = [e["slides"] for e in plan_errors] + untranslated_batches
+        repo.update_project(
+            db_path, project_id,
+            failed_batches_json=json.dumps(all_retry_batches, ensure_ascii=False),
+        )
 
         repo.update_project(db_path, project_id, progress=85, status_message="AI 번역 자동 검수 중...")
         if keys["openai"]:
@@ -177,7 +181,7 @@ def retry_failed_translation_batches(db_path, projects_dir, project_id, language
         out_name = pptx_pipeline.make_output_filename(project["original_filename"], lang_meta, project.get("name"))
         out_path = os.path.join(out_dir, out_name)
 
-        applied_records, apply_flags = pptx_pipeline.apply_translation_plan(
+        applied_records, apply_flags, untranslated_batches = pptx_pipeline.apply_translation_plan(
             project["original_path"], extracted, existing_plan, lang_code, lang_meta, out_path,
         )
         repo.replace_slide_texts(db_path, project_id, applied_records)
@@ -215,13 +219,17 @@ def retry_failed_translation_batches(db_path, projects_dir, project_id, language
                 "issue": f"미리보기 렌더링 실패 (LibreOffice): {e}", "severity": "info",
             }])
 
+        remaining_retry_batches = [e["slides"] for e in new_errors] + untranslated_batches
         repo.update_project(
             db_path, project_id, stage="review_translation", progress=100,
             translated_path=out_path, status_message="실패 배치 재시도 완료 — 검수 대기 중",
             plan_json=json.dumps(existing_plan, ensure_ascii=False),
-            failed_batches_json=json.dumps([e["slides"] for e in new_errors], ensure_ascii=False),
+            failed_batches_json=json.dumps(remaining_retry_batches, ensure_ascii=False),
         )
-        repo.add_event(db_path, project_id, f"실패 배치 재시도 완료 (남은 실패: {len(new_errors)}개)")
+        repo.add_event(
+            db_path, project_id,
+            f"실패 배치 재시도 완료 (남은 실패: {len(new_errors)}개, 여전히 누락된 슬라이드: {len(untranslated_batches)}개)",
+        )
     except Exception as e:
         logger.error("translation retry failed: %s", traceback.format_exc())
         repo.update_project(db_path, project_id, stage="failed", status_message=f"번역 재시도 오류: {e}")

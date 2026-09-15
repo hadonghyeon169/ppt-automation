@@ -160,14 +160,22 @@ def clear_review_flags(db_path, project_id, stage):
     c.close()
 
 
+_SEVERITY_ORDER_SQL = "CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END"
+
+
 def list_review_flags(db_path, project_id, stage=None):
+    # severity를 알파벳순(DESC)으로 정렬하면 'warning' > 'info' > 'error' 순서가 되어
+    # 정작 가장 심각한 error가 맨 아래로 밀려서 눈에 안 띄는 문제가 있었다. error를
+    # 항상 최상단에 오도록 severity 우선순위를 명시적으로 지정한다.
     c = _conn(db_path)
     if stage:
-        rows = c.execute("SELECT * FROM review_flags WHERE project_id = ? AND stage = ? ORDER BY severity DESC, id",
-                          (project_id, stage)).fetchall()
+        rows = c.execute(
+            f"SELECT * FROM review_flags WHERE project_id = ? AND stage = ? ORDER BY {_SEVERITY_ORDER_SQL}, id",
+            (project_id, stage)).fetchall()
     else:
-        rows = c.execute("SELECT * FROM review_flags WHERE project_id = ? ORDER BY stage, severity DESC, id",
-                          (project_id,)).fetchall()
+        rows = c.execute(
+            f"SELECT * FROM review_flags WHERE project_id = ? ORDER BY stage, {_SEVERITY_ORDER_SQL}, id",
+            (project_id,)).fetchall()
     c.close()
     return [dict(r) for r in rows]
 

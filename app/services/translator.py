@@ -80,8 +80,13 @@ def plan_translation(api_key, model, extracted, lang_code, lang_meta, reference_
     for bi, batch in enumerate(batches):
         slide_indices = [s["slide_index"] for s in batch]
         payload_slides = [_slide_to_prompt_payload(s) for s in batch]
-        # 번역 대상 도형이 하나도 없는 배치는 API 호출을 건너뛴다
-        if not any(sh["has_chinese"] or ("번역" in (sh["shape_name"] or "")) for s in payload_slides for sh in s["shapes"]):
+        # 텍스트가 있는 도형이 하나도 없는(완전히 빈) 배치만 API 호출을 건너뛴다.
+        # 예전에는 has_chinese/"번역" 이름 조건으로도 걸러냈는데, 이 조건에 안 걸리는
+        # "순수 한국어 도형(원문 예문, 말풍선, 정의 박스 등)"이 실제로는 번역 대상인
+        # 경우가 많아서 해당 슬라이드가 통째로 한 번도 LLM에 보내지지 않고 원문 그대로
+        # 남는 사고가 있었다 (검수 단계에서도 플래그 없이 조용히 넘어감). 텍스트가
+        # 하나라도 있으면 항상 LLM 판단(translate/skip)을 받도록 바꾼다.
+        if not any(s["shapes"] for s in payload_slides):
             if progress_cb:
                 progress_cb(bi + 1, len(batches), skipped=True)
             continue

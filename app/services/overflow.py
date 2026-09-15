@@ -106,6 +106,22 @@ def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_
     return min_font_size_pt, True
 
 
+def fit_font_size_to_width(text, requested_font_size_pt, max_cx_emu, min_font_size_pt=10):
+    """wrap="none"(줄바꿈 없음, 한 줄) 도형용: 박스를 슬라이드 폭 한도(max_cx_emu)까지
+    넓혀도 텍스트가 다 안 들어가면 폰트를 줄인다. suggest_independent_shape_resize는
+    박스를 최대 max_width_ratio(기본 92%)까지만 넓히므로, 그래도 넘치는 긴 번역문은
+    이전엔 아무 보정 없이 슬라이드 밖으로 삐져나갔다."""
+    if not text or not max_cx_emu:
+        return requested_font_size_pt, False
+    size = requested_font_size_pt
+    while size >= min_font_size_pt:
+        width = estimate_text_width_emu(text, size)
+        if width <= max_cx_emu:
+            return size, False
+        size -= 1
+    return min_font_size_pt, True
+
+
 def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu, max_width_ratio=0.92):
     """독립적인 제목/안내문 도형: 폭을 늘리고 정렬 기준으로 x를 재조정."""
     est_width = estimate_text_width_emu(text, font_size_pt)

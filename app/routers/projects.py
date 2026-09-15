@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import uuid
 
@@ -85,10 +86,15 @@ def detail(project_id):
     projects_dir = current_app.config["PROJECTS_DIR"]
     preview_translated = _list_preview_files(projects_dir, project_id, "preview_translated")
     preview_final = _list_preview_files(projects_dir, project_id, "preview_final")
+    try:
+        failed_batches_count = len(json.loads(project.get("failed_batches_json") or "[]"))
+    except (TypeError, ValueError):
+        failed_batches_count = 0
     return render_template(
         "project_detail.html", project=project, flags=flags, events=events,
         audio_assets=audio_assets, slide_texts=slide_texts, lang_meta=lang_meta,
         preview_translated=preview_translated, preview_final=preview_final,
+        failed_batches_count=failed_batches_count,
     )
 
 

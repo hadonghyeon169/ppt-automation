@@ -5,6 +5,14 @@
   {% if not relevant %}
     <div class="muted">항목 없음</div>
   {% else %}
+    {% set error_count = relevant|selectattr('severity', 'equalto', 'error')|list|length %}
+    {% set warning_count = relevant|selectattr('severity', 'equalto', 'warning')|list|length %}
+    {% if error_count or warning_count %}
+    <div class="flash {{ 'error' if error_count else 'warning' }}" style="margin-bottom:10px;">
+      확인이 필요한 항목: 오류 {{ error_count }}개, 경고 {{ warning_count }}개
+      {% if error_count %} — 오류는 번역이 누락되었거나 적용되지 않아 원문이 그대로 남은 항목입니다. 아래 "번역 누락/실패 항목만 재시도" 버튼으로 다시 시도하세요.{% endif %}
+    </div>
+    {% endif %}
     <table>
       <thead><tr><th>슬라이드</th><th>도형</th><th>원문/기대값</th><th>번역/실제값</th><th>이슈</th><th>심각도</th><th></th></tr></thead>
       <tbody>
@@ -69,9 +77,9 @@
         <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}">
           <button class="btn secondary" type="submit">다시 번역 실행 (전체)</button>
         </form>
-        {% if project['failed_batches_json'] and project['failed_batches_json'] != '[]' %}
+        {% if failed_batches_count %}
         <form method="post" action="{{ url_for('projects.retry_translation_failed', project_id=project['id']) }}">
-          <button class="btn secondary" type="submit">실패한 배치만 재시도</button>
+          <button class="btn secondary" type="submit">번역 누락/실패 항목만 재시도 ({{ failed_batches_count }}개 슬라이드)</button>
         </form>
         {% endif %}
         <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='translated') }}">번역본 다운로드</a>

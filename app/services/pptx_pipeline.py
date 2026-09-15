@@ -31,6 +31,7 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
 
     applied_records = []
     review_flags = []
+    untranslated_slides = set()  # 원문이 그대로 남은(번역 누락) 슬라이드 — 부분 재번역 대상
 
     for slide_idx, slide in enumerate(prs.slides):
         sp_list = ops.iter_all_shapes(slide)
@@ -50,26 +51,51 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             shape_id = f"s{slide_idx}_{stable_id}"
             plan = plan_by_shape.get(shape_id)
             meta = extracted_by_id.get(shape_id)
-            if not plan or not meta:
+            if not meta:
+                continue
+            if not plan:
+                # LLM 응답에 이 도형이 아예 없었다 (배치 자체가 스킵됐거나, 응답이 잘렸거나,
+                # 모델이 그냥 빠뜨림). action="skip"과 달리 이건 "의도적 판단"이 아니라
+                # 누락이므로 원문이 그대로 남아있다는 걸 반드시 눈에 띄게 표시해야 한다
+                # (전에는 여기서 조용히 continue만 해서, 번역이 하나도 안 된 슬라이드가
+                # 검수 화면에 아무 표시 없이 원문 그대로 섞여 나가는 사고가 있었다).
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                    "source_text": meta["full_text"], "translated_text": None,
+                    "issue": "AI 번역 응답에 이 도형이 누락되어 원문이 그대로 남아 있습니다.",
+                    "severity": "error",
+                })
+                untranslated_slides.add(slide_idx)
                 continue
             if plan.get("action") != "translate":
-                continue
+                continue  # 모델이 의도적으로 skip 처리(지시문/페이지번호 등) — 원문 유지가 맞음
 
             translated_text = plan.get("translated_text") or ""
             translated_paragraphs = plan.get("translated_paragraphs")
+            if not translated_text and not translated_paragraphs:
+                # action은 "translate"인데 실제 번역 결과가 비어있는 경우 — 이것도 원문이
+                # 그대로 남으므로 누락과 동일하게 취급한다.
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                    "source_text": meta["full_text"], "translated_text": None,
+                    "issue": "AI가 번역하겠다고 표시했지만 번역 결과가 비어 있어 원문이 그대로 남아 있습니다.",
+                    "severity": "error",
+                })
+                untranslated_slides.add(slide_idx)
+                continue
             bold_category = plan.get("bold_category", "plain")
             force_bold = True if bold_category == "mixed_bold" else False
             force_sz_pt = plan.get("force_font_size_pt")
             is_white = meta["is_white_text"]
 
-            # ── 폰트 크기 사전 검증(word-wrap 도형만) ──────────────────────
+            # ── 폰트 크기 사전 검증(모든 도형) ──────────────────────────────
             # force_font_size_pt(언어별 정밀 규칙 또는 AI 판단)는 이 PPT 템플릿의
             # 실제 도형 크기를 모르는 상태에서 나온 "권장값"일 뿐이다. wrap="square"
-            # (또는 wrap 속성 없음 = 기본값 square) 도형은 실제 cy(높이) 기준으로
-            # 텍스트가 들어가는지 검증하고, 넘치면 폰트를 줄인다. 그동안 이 검증이
-            # 전혀 없어서(예전엔 wrap="none" 도형만 넘침 보정) 말풍선/라벨/본문
-            # 텍스트가 도형을 넘어가는 문제(텍스트가 너무 크거나 길어서 안 맞음)가
-            # 있었다.
+            # (또는 wrap 속성 없음 = 기본값 square) 도형은 실제 cy(높이) 기준으로,
+            # wrap="none"(줄바꿈 없는 한 줄 도형)은 슬라이드 폭 한도 기준으로 텍스트가
+            # 들어가는지 검증하고, 넘치면 폰트를 줄인다. wrap="none"은 이후 박스 자체를
+            # 넓히는 보정도 받지만 그마저도 슬라이드 폭의 92%까지만 넓어지므로, 아주 긴
+            # 번역문은 폰트 축소 없이는 여전히 슬라이드 밖으로 삐져나갈 수 있었다.
             requested_pt = force_sz_pt or (meta["font_sizes_pt"][0] if meta["font_sizes_pt"] else 18)
             fit_note = None
             if meta["xfrm_emu"] and meta["wrap"] != "none":
@@ -90,6 +116,20 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                         )
                     else:
                         fit_note = f"도형 크기에 맞춰 폰트를 {requested_pt}pt → {fitted_pt}pt로 자동 축소했습니다."
+                    force_sz_pt = fitted_pt
+            elif meta["xfrm_emu"] and meta["wrap"] == "none":
+                max_cx = int(slide_width * 0.92)
+                fitted_pt, overflow_unresolved = ov.fit_font_size_to_width(
+                    translated_text, requested_pt, max_cx,
+                )
+                if fitted_pt < requested_pt:
+                    if overflow_unresolved:
+                        fit_note = (
+                            f"번역 텍스트가 슬라이드 폭에 비해 너무 깁니다 (최소 {fitted_pt}pt로 "
+                            f"줄여도 넘칠 수 있음 — 텍스트를 줄이거나 도형을 수동으로 확인해주세요)."
+                        )
+                    else:
+                        fit_note = f"도형 폭에 맞춰 폰트를 {requested_pt}pt → {fitted_pt}pt로 자동 축소했습니다."
                     force_sz_pt = fitted_pt
 
             force_sz = int(force_sz_pt * 100) if force_sz_pt else None
@@ -154,16 +194,20 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     "severity": "warning" if "확인해주세요" in fit_note else "info",
                 })
 
-            translated_sp_on_slide.append((sp, meta, translated_text or " ".join(translated_paragraphs or [])))
+            applied_font_size = force_sz_pt or requested_pt
+            translated_sp_on_slide.append(
+                (sp, meta, translated_text or " ".join(translated_paragraphs or []), applied_font_size)
+            )
 
         # ── 넘침(overflow) 보정 ──────────────────────────────────────────
         all_boxes = [sh["xfrm_emu"] for sh in extracted_slide["shapes"] if sh["xfrm_emu"]]
-        for sp, meta, final_text in translated_sp_on_slide:
+        for sp, meta, final_text, font_size in translated_sp_on_slide:
             xfrm = meta["xfrm_emu"]
             wrap = meta["wrap"]
             if not xfrm or wrap != "none":
                 continue
-            font_size = (meta["font_sizes_pt"][0] if meta["font_sizes_pt"] else 18)
+            # font_size는 위 사전 검증 단계에서 이미 적용된(축소됐을 수 있는) 실제 폰트
+            # 크기다 — 원본 크기를 다시 쓰면 축소를 반영 못 하고 박스만 과도하게 넓히게 된다.
             ratio = ov.compute_overflow_ratio(final_text, font_size, xfrm["cx"])
             if ratio <= 1.05:
                 continue  # 넘치지 않음
@@ -196,7 +240,12 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     prs.save(out_path)
-    return applied_records, review_flags
+    # 부분 재번역 대상: 슬라이드 하나당 1개짜리 "배치"로 반환한다 (기존 실패-배치
+    # 재시도 인프라(failed_batches_json)가 [[slide_idx, ...], ...] 형태를 그대로
+    # 재사용하므로, 여기서는 슬라이드 단위로 세분화해 이미 성공한 슬라이드까지
+    # 다시 부르지 않게 한다).
+    untranslated_batches = [[idx] for idx in sorted(untranslated_slides)]
+    return applied_records, review_flags, untranslated_batches
 
 
 def make_output_filename(original_filename, lang_meta, project_name=None):
