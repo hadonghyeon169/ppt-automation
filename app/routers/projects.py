@@ -189,7 +189,7 @@ def tts_setup(project_id):
         t = threading.Thread(
             target=pipeline_runner.run_tts_stage,
             args=(db_path, projects_dir, project_id, voice_id),
-            kwargs={"audio_format": audio_format},
+            kwargs={"audio_format": audio_format, "languages": current_app.config["LANGUAGES"]},
             daemon=True,
         )
         t.start()
@@ -215,7 +215,7 @@ def tts_retry_failed(project_id):
     t = threading.Thread(
         target=pipeline_runner.run_tts_stage,
         args=(db_path, projects_dir, project_id, voice_id),
-        kwargs={"audio_format": ext, "only_failed": True},
+        kwargs={"audio_format": ext, "only_failed": True, "languages": current_app.config["LANGUAGES"]},
         daemon=True,
     )
     t.start()

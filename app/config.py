@@ -20,11 +20,15 @@ class Config:
         # 태국어=Noto Sans TI, 러시아어/베트남어/영어=Noto Sans, 한국어=Noto Sans KR.
         # 인도네시아어는 회사 언어 목록엔 없지만 베트남어와 동일하게 라틴 문자권이라
         # 동일 폰트(Noto Sans)를 적용한다.
+        # tts_lang: 타입캐스트 API가 요구하는 ISO 639-3 언어 코드 (auto-detect에 맡기지 않고
+        # 명시적으로 지정해야 정확한 언어로 읽는다 — 특히 이 앱은 "받침" 같은 한글 단어를
+        # 번역문 안에 그대로 섞어 넣는 규칙이 있어서, 언어를 지정하지 않으면 자동감지가
+        # 혼동해 엉뚱한 언어(중국어 등)로 읽는 경우가 있었다).
         self.LANGUAGES = {
-            "th-TH": {"label": "태국어", "font": "Noto Sans TI", "complex_script": True, "country_code": "TH"},
-            "ru-RU": {"label": "러시아어", "font": "Noto Sans", "complex_script": False, "country_code": "RU"},
-            "vi-VN": {"label": "베트남어", "font": "Noto Sans", "complex_script": False, "country_code": "VI"},
-            "id-ID": {"label": "인도네시아어", "font": "Noto Sans", "complex_script": False, "country_code": "ID"},
+            "th-TH": {"label": "태국어", "font": "Noto Sans TI", "complex_script": True, "country_code": "TH", "tts_lang": "tha"},
+            "ru-RU": {"label": "러시아어", "font": "Noto Sans", "complex_script": False, "country_code": "RU", "tts_lang": "rus"},
+            "vi-VN": {"label": "베트남어", "font": "Noto Sans", "complex_script": False, "country_code": "VI", "tts_lang": "vie"},
+            "id-ID": {"label": "인도네시아어", "font": "Noto Sans", "complex_script": False, "country_code": "ID", "tts_lang": "ind"},
         }
 
     def ensure_dirs(self):

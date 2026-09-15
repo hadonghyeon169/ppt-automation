@@ -10,6 +10,7 @@ import traceback
 
 from .. import repo
 from . import slide_extractor, translator, pptx_pipeline, render, qa_reviewer, tts_typecast, audio_embed
+from . import ppt_xml_ops as ops
 
 logger = logging.getLogger(__name__)
 
@@ -231,11 +232,20 @@ def retry_failed_translation_batches(db_path, projects_dir, project_id, language
 # 4단계: 타입캐스트 음성 생성
 # ────────────────────────────────────────────────────────────────────────
 def run_tts_stage(db_path, projects_dir, project_id, voice_id, typecast_model="ssfm-v30",
-                   audio_format="wav", language=None, emotion_type=None, only_failed=False):
+                   audio_format="wav", language=None, emotion_type=None, only_failed=False,
+                   languages=None):
     try:
         repo.update_project(db_path, project_id, stage="tts_running", progress=0,
                              status_message="음성 생성 준비 중...")
         project = repo.get_project(db_path, project_id)
+
+        # 타입캐스트는 language를 안 주면 텍스트로 자동감지하는데, 이 앱의 번역문은
+        # 한글 단어("받침" 등)가 규칙상 섞여 들어가 있어서 자동감지가 엉뚱한 언어로
+        # 잘못 판단하는 경우가 있었다 (예: 러시아어인데 중국어로 읽힘). 프로젝트의
+        # 목표 언어에서 명시적으로 ISO 639-3 코드를 가져와 지정한다.
+        if language is None and languages:
+            lang_meta_for_tts = languages.get(project["target_lang"], {})
+            language = lang_meta_for_tts.get("tts_lang")
 
         if only_failed:
             # 이미 성공(status='done')한 슬라이드는 그대로 두고, 실패한 것만 다시 합성한다
@@ -271,6 +281,17 @@ def run_tts_stage(db_path, projects_dir, project_id, voice_id, typecast_model="s
             if not asset["script_text"]:
                 repo.update_audio_asset(db_path, asset["id"], status="done", duration_sec=0)
                 continue
+            if ops.has_chinese(asset["script_text"]):
+                # TTS에 넘기는 스크립트 자체에 중국어가 남아있다 — 언어 코드 문제가 아니라
+                # 이 슬라이드가 애초에 번역되지 않았다는 뜻이다 (번역 단계에서 skip되었거나
+                # 실패한 도형). 그래도 일단 합성은 진행하되(중국어로 읽힐 것) 눈에 띄게 남긴다.
+                repo.add_event(
+                    db_path, project_id,
+                    f"슬라이드 {asset['slide_index'] + 1} 스크립트에 중국어가 남아있습니다 "
+                    f"(번역이 적용 안 된 것으로 보임 — 음성도 중국어로 나올 수 있습니다): "
+                    f"{asset['script_text'][:60]}",
+                    level="error",
+                )
             try:
                 chunks = tts_typecast.split_text_for_tts(asset["script_text"])
                 combined = b""
