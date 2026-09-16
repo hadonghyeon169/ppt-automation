@@ -248,7 +248,12 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 continue
             # font_size는 위 사전 검증 단계에서 이미 적용된(축소됐을 수 있는) 실제 폰트
             # 크기다 — 원본 크기를 다시 쓰면 축소를 반영 못 하고 박스만 과도하게 넓히게 된다.
-            ratio = ov.compute_overflow_ratio(final_text, font_size, xfrm["cx"])
+            # insets_lr_emu(좌우 내부 여백)를 빼지 않으면 실제로는 넘치는 도형도 비율이
+            # 1.05 기준선 바로 아래로 나와 보정이 안 걸리는 문제가 있었다(실사례:
+            # "예문" 번역 도형들이 좌우 여백 각 0.15in인데 이를 무시하면 ratio
+            # 0.98~0.99로 계산되어 통과했지만, 실사용 폭 기준으로는 1.05~1.06으로 넘침).
+            insets_emu = meta.get("insets_lr_emu", 0) or 0
+            ratio = ov.compute_overflow_ratio(final_text, font_size, xfrm["cx"], insets_emu)
             if ratio <= 1.05:
                 continue  # 넘치지 않음
 
@@ -267,7 +272,8 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     # 실제로 반복 관찰된 옆으로 삐져나가는 문제에 대한 대응).
                     # 도형 높이(cy)까지 늘어난 줄 수가 실제로 들어가는지는 이 시점에
                     # 확인할 수 없으므로 여전히 warning으로 남겨 사람이 확인하게 한다.
-                    split_lines = ov.split_text_for_width(final_text, font_size, xfrm["cx"], max_lines=2)
+                    usable_cx = max(xfrm["cx"] - insets_emu, 1)
+                    split_lines = ov.split_text_for_width(final_text, font_size, usable_cx, max_lines=2)
                     if split_lines and len(split_lines) > 1:
                         ops.force_multiline(sp, split_lines)
                         review_flags.append({
@@ -290,6 +296,7 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 else:
                     new_geo = ov.suggest_independent_shape_resize(
                         final_text, font_size, xfrm, meta["align"], slide_width,
+                        insets_emu=insets_emu,
                     )
                     ops.set_shape_xfrm(sp, x=new_geo["x"], cx=new_geo["cx"])
             except Exception as e:
