@@ -219,7 +219,7 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
     return _best_split(space_points)
 
 
-def split_at_best_comma(text, font_size_pt):
+def split_at_best_comma(text, font_size_pt, usable_cx_emu=None):
     """쉼표(,，、)가 있으면 그 지점에서 정확히 2줄로 나눈다.
 
     split_text_for_width와 달리 "박스 폭을 넘는지" 여부와 무관하게 쉼표가 있으면
@@ -228,19 +228,43 @@ def split_at_best_comma(text, font_size_pt):
     번역하면 문장이 거의 항상 원문보다 길어지는데, 쉼표가 있으면 한 줄에 다
     들어가는 짧은 번역문이라도 PowerPoint 자동 워드랩(임의의 단어 경계에서 잘림)에
     맡기지 않고 그 쉼표 지점에서 항상 2줄로 끊어야 자연스럽다고 확인받았다.
-    쉼표가 여러 개면 두 줄의 (근사)폭이 가장 균형 있게 나뉘는 지점을 고른다.
+
+    usable_cx_emu(도형의 실사용 가능 폭)를 넘기면, 두 줄 다 그 폭 안에 들어가는
+    쉼표 지점 중에서 가장 균형 잡힌 곳을 고른다 — 실제 사례: "그냥 총 텍스트 폭의
+    절반"으로만 나누면(이전 버전) 박스가 좁을 때 나뉜 줄 하나가 여전히 박스보다
+    넓어서, 뒤이은 fit_font_size_to_box가 "결국 3~4줄로 더 감긴다"고 보고 필요
+    이상으로 폰트를 작게 줄이는 문제가 있었다. 두 줄이 실제로 박스 폭에 맞는
+    지점을 우선 찾으면 폰트를 불필요하게 줄이지 않고도 정확히 2줄로 끝난다.
+    둘 다 폭에 맞는 지점이 하나도 없으면(문장 자체가 워낙 길 때) 차선책으로
+    "더 넓은 쪽 줄의 폭이 가장 작아지는" 지점을 고른다 — 이 경우는 fit_font_size_to_box가
+    추가로 폰트를 줄이는 게 맞다(실제로 더 긴 줄이 있으니까).
     쉼표가 없거나 분할 결과 어느 한쪽이 빈 문자열이면 None을 반환한다."""
     if not text:
         return None
     comma_points = [m.end() for m in re.finditer(r'[,，、]\s*', text)]
     if not comma_points:
         return None
-    total_w = estimate_text_width_emu(text, font_size_pt)
-    target = total_w / 2
-    best_idx = min(
-        comma_points,
-        key=lambda i: abs(estimate_text_width_emu(text[:i], font_size_pt) - target),
-    )
+
+    def widths(i):
+        return (
+            estimate_text_width_emu(text[:i], font_size_pt),
+            estimate_text_width_emu(text[i:], font_size_pt),
+        )
+
+    if usable_cx_emu:
+        fitting = [i for i in comma_points if all(w <= usable_cx_emu for w in widths(i))]
+        if fitting:
+            total_w = estimate_text_width_emu(text, font_size_pt)
+            target = total_w / 2
+            best_idx = min(fitting, key=lambda i: abs(widths(i)[0] - target))
+        else:
+            # 어느 지점을 골라도 한쪽은 박스보다 넓다 — 더 넓은 쪽을 최소화한다.
+            best_idx = min(comma_points, key=lambda i: max(widths(i)))
+    else:
+        total_w = estimate_text_width_emu(text, font_size_pt)
+        target = total_w / 2
+        best_idx = min(comma_points, key=lambda i: abs(widths(i)[0] - target))
+
     first, rest = text[:best_idx].strip(), text[best_idx:].strip()
     if not first or not rest:
         return None
