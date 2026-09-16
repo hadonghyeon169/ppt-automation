@@ -8,6 +8,28 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 from . import ppt_xml_ops as ops
 
+# "13번/38번 슬라이드"처럼 문법 설명 예문 박스가 있는 슬라이드에만 음성을 넣기 위한
+# 판별 마커. 사용자가 확인해준 "초급2 12강" 샘플(44개 슬라이드 전체)에서 이 세 단어가
+# 모두 함께 나타나는 슬라이드는 정확히 13번/38번 두 곳뿐이었다(다른 슬라이드는 셋 중
+# 어느 것도 없었음 — 오탐/누락 없음). CultureFi 문법 설명 템플릿의 "정의/구조/예문"
+# 라벨 3종 세트로 보이며, 이 라벨들은 번역 대상 도형(이름에 "번역"이 붙는 도형)이
+# 아니라 순수 한국어 라벨 도형("Rect 0" 등)에 들어있어 번역 후에도 원문 그대로
+# 남아있다 — 그래서 슬라이드 번호가 다른 다른 PPT 파일에서도 이 문자열로 안정적으로
+# 같은 유형의 슬라이드를 찾아낼 수 있다 (번호가 아니라 내용/구조 기반 판단).
+AUDIO_REQUIRED_MARKERS = ("예문", "정의", "구조")
+
+
+def get_audio_required_slide_indices(extracted):
+    """extract_presentation() 결과에서 음성이 필요한(문법 설명 예문) 슬라이드의
+    slide_index 목록을 반환한다. 판단 기준: 슬라이드 안의 모든 도형 텍스트를 합쳤을 때
+    AUDIO_REQUIRED_MARKERS의 세 마커가 전부 함께 나타나는 슬라이드."""
+    indices = []
+    for slide in extracted["slides"]:
+        combined = "".join(s["full_text"] for s in slide["shapes"])
+        if all(marker in combined for marker in AUDIO_REQUIRED_MARKERS):
+            indices.append(slide["slide_index"])
+    return indices
+
 
 def extract_presentation(pptx_path):
     prs = Presentation(pptx_path)
@@ -34,6 +56,10 @@ def extract_presentation(pptx_path):
             # (자세한 배경은 ppt_xml_ops.get_body_pr_insets 참고) — 여기서 함께 뽑아
             # pptx_pipeline.py의 넘침 보정 계산에 넘겨준다.
             insets_lr_emu = ops.get_body_pr_insets(sp)
+            # wrap="square"(줄바꿈) 도형의 높이 적합 판정(fit_font_size_to_box)에서도
+            # 같은 이유로 실제 상하 여백(tIns+bIns)이 필요해 함께 뽑는다 — 자세한
+            # 배경은 ppt_xml_ops.get_body_pr_insets_tb 참고.
+            insets_tb_emu = ops.get_body_pr_insets_tb(sp)
             is_white = ops.has_bg_color(sp)
             runs = list(sp.iter(qn('a:r')))
             bold_flags = []
@@ -75,6 +101,7 @@ def extract_presentation(pptx_path):
                 "xfrm_emu": xfrm,
                 "is_grouped": is_grouped,
                 "insets_lr_emu": insets_lr_emu,
+                "insets_tb_emu": insets_tb_emu,
             })
         slides_data.append({
             "slide_index": slide_idx,
