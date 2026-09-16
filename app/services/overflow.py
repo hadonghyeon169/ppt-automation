@@ -65,13 +65,15 @@ USABLE_WIDTH_RATIO = 0.94   # 도형 내부 여백(lIns/rIns) 근사 차감
 USABLE_HEIGHT_RATIO = 0.88  # 도형 내부 여백(tIns/bIns) + 줄바꿈 근사오차 대비 차감
 
 
-def estimate_line_count(text, font_size_pt, box_cx_emu):
+def estimate_line_count(text, font_size_pt, box_cx_emu, usable_cx_emu=None):
     """word-wrap 도형에서 텍스트가 실제로 몇 줄로 감길지 근사한다.
     명시적 개행(\\n)은 각각 최소 한 줄로 세고, 각 줄 안에서는 폭 기준으로 자동
-    줄바꿈되는 횟수를 ceil(텍스트폭 / 도형폭)으로 근사한다."""
+    줄바꿈되는 횟수를 ceil(텍스트폭 / 도형폭)으로 근사한다.
+    usable_cx_emu를 넘기면 고정 비율(USABLE_WIDTH_RATIO) 대신 그 값을 실사용
+    가능 폭으로 쓴다 (도형의 실제 lIns/rIns 기반 — fit_font_size_to_box 참고)."""
     if not text:
         return 1
-    usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
+    usable_cx = max(int(usable_cx_emu if usable_cx_emu is not None else box_cx_emu * USABLE_WIDTH_RATIO), 1)
     total_lines = 0
     for raw_line in text.split("\n"):
         if not raw_line.strip():
@@ -99,7 +101,8 @@ def estimate_max_word_width_emu(text, font_size_pt):
 
 
 def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_cy_emu,
-                          min_font_size_pt=10, line_spacing=LINE_SPACING_FACTOR):
+                          min_font_size_pt=10, line_spacing=LINE_SPACING_FACTOR,
+                          insets_lr_emu=None, insets_tb_emu=None):
     """word-wrap 도형(wrap != "none")용: 도형 실제 높이(cy)에 텍스트가 들어가고,
     동시에 가장 긴 단어 하나가 박스 폭을 벗어나지 않을 때까지 폰트 크기를 1pt씩
     낮춘다. AI가 제안한 force_font_size_pt는 이 PPT 템플릿의 실제 도형 크기를
@@ -109,6 +112,15 @@ def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_
     "들어간다"고 나와도 긴 단어 하나가 있는 줄만 박스 옆으로 삐져나가는 경우를
     info로 잘못 분류하게 된다(실제 사례: 러시아어 긴 단어가 포함된 도형에서
     글자가 상자 옆/밖으로 넘어가는데도 자동 축소가 "성공"으로 처리됨).
+
+    insets_lr_emu/insets_tb_emu(도형의 실제 lIns+rIns, tIns+bIns)를 넘기면 그 값으로
+    실사용 가능 폭/높이를 정확히 계산하고, 넘기지 않으면 기존처럼 고정 비율
+    (USABLE_WIDTH_RATIO/USABLE_HEIGHT_RATIO)로 근사한다. 고정 비율은 실제보다
+    여유 있게 잡히는 도형(예: 좌우 여백이 각 0.15in로 큰 도형)에서 "이 폰트면
+    들어간다"고 오판해, 실제로는 2줄로 감긴 텍스트가 도형 아래로 삐져나와 다음
+    도형과 겹쳐 보이는 문제가 있었다(실사례: "이 건물은 높은 편이에요" 러시아어
+    번역 도형 — 폭 2.57in에 18pt 문장이 들어가려면 2줄이 필요한데, 근사 비율로는
+    "1줄로 들어간다"고 잘못 판단해 폰트를 줄이지 않고 그대로 둠).
 
     text_or_lines: 문자열 하나 또는 문단 리스트(문단은 줄바꿈으로 취급).
     반환: (fitted_font_size_pt, overflow_unresolved: bool)
@@ -123,11 +135,17 @@ def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_
     if not full_text.strip():
         return requested_font_size_pt, False
 
-    usable_cy = max(int(box_cy_emu * USABLE_HEIGHT_RATIO), 1)
-    usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
+    if insets_tb_emu is not None:
+        usable_cy = max(box_cy_emu - insets_tb_emu, 1)
+    else:
+        usable_cy = max(int(box_cy_emu * USABLE_HEIGHT_RATIO), 1)
+    if insets_lr_emu is not None:
+        usable_cx = max(box_cx_emu - insets_lr_emu, 1)
+    else:
+        usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
     size = requested_font_size_pt
     while size >= min_font_size_pt:
-        lines = estimate_line_count(full_text, size, box_cx_emu)
+        lines = estimate_line_count(full_text, size, box_cx_emu, usable_cx_emu=usable_cx)
         est_height = lines * size * line_spacing * EMU_PER_PT
         word_width = estimate_max_word_width_emu(full_text, size)
         if est_height <= usable_cy and word_width <= usable_cx:
@@ -199,6 +217,34 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
         return result
     space_points = (m.start() for m in re.finditer(r'\s+', text))
     return _best_split(space_points)
+
+
+def split_at_best_comma(text, font_size_pt):
+    """쉼표(,，、)가 있으면 그 지점에서 정확히 2줄로 나눈다.
+
+    split_text_for_width와 달리 "박스 폭을 넘는지" 여부와 무관하게 쉼표가 있으면
+    항상 분할 대상으로 본다 — 말풍선 캡션 도형(이름="번역", wrap="square") 전용
+    규칙이다. 사용자 확인 사항: 4번/26번 슬라이드 같은 캐릭터+말풍선 슬라이드는
+    번역하면 문장이 거의 항상 원문보다 길어지는데, 쉼표가 있으면 한 줄에 다
+    들어가는 짧은 번역문이라도 PowerPoint 자동 워드랩(임의의 단어 경계에서 잘림)에
+    맡기지 않고 그 쉼표 지점에서 항상 2줄로 끊어야 자연스럽다고 확인받았다.
+    쉼표가 여러 개면 두 줄의 (근사)폭이 가장 균형 있게 나뉘는 지점을 고른다.
+    쉼표가 없거나 분할 결과 어느 한쪽이 빈 문자열이면 None을 반환한다."""
+    if not text:
+        return None
+    comma_points = [m.end() for m in re.finditer(r'[,，、]\s*', text)]
+    if not comma_points:
+        return None
+    total_w = estimate_text_width_emu(text, font_size_pt)
+    target = total_w / 2
+    best_idx = min(
+        comma_points,
+        key=lambda i: abs(estimate_text_width_emu(text[:i], font_size_pt) - target),
+    )
+    first, rest = text[:best_idx].strip(), text[best_idx:].strip()
+    if not first or not rest:
+        return None
+    return [first, rest]
 
 
 def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu,
