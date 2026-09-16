@@ -138,7 +138,6 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
             continue
 
         c_xfrm = container["xfrm_emu"]
-        n = len(entries)
         kr_font_pt = container["font_sizes_pt"][0] if container.get("font_sizes_pt") else 27
         kr_line_h_emu = kr_font_pt * EXAMPLE_KR_LINE_HEIGHT_FACTOR * ov.EMU_PER_PT
         # 컨테이너 높이를 문단 수로 균등분할해서 슬롯 시작점을 역산하면 실제와 어긋난다
@@ -149,16 +148,30 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
         # 준 참고 파일에서 확인: 각 번역이 대응 한국어 문단과 같은 행에 나란히
         # 배치되어 있었음), 그 y좌표를 그대로 기준점으로 삼아 그 아래로 내린다.
         row_anchors = [t_meta["xfrm_emu"]["y"] for t_meta, _ in entries]
-        cumulative_push = 0.0
+
+        # 실사용자 파일로 검증하다 실제로 겪은 버그: 컨테이너를 문단 수로 나눈
+        # "슬롯" 경계를 폰트 크기 상한으로 그대로 썼더니, 마지막 항목은 컨테이너
+        # 바닥까지 남는 공간이 애초에 한 줄 분량(템플릿이 원래 "옆에 붙여서" 배치
+        # 했을 때 쓰던 공간)밖에 없어서 거의 항상 최소 폰트(10pt)까지 짓눌리고,
+        # 그마저도 카드 밖으로 살짝 넘쳤다(사용자가 첨부한 실제 파일에서
+        # 확인: rPr sz=1000, cy가 컨테이너 바닥을 넘어감). 예문 번역은 거의 항상
+        # 한 줄짜리 짧은 문장이므로, 슬롯 경계에 얽매이지 않고 "여유 있는" 고정
+        # 상한만 두어(비정상적으로 긴 번역에 대한 안전장치 목적) 원래 폰트 크기를
+        # 최대한 유지한다. 각 항목의 실제 위치는 "자기 행(row_anchor) 기준 위치"와
+        # "바로 앞 항목이 끝난 위치" 중 더 아래쪽을 쓰는 식으로 순차적으로 정해서,
+        # 앞 항목이 짧으면(거의 항상 그렇다) 남는 공간이 뒤 항목에 자연스럽게
+        # 재분배되고, 앞 항목이 길 때만 실제로 필요한 만큼만 뒤 항목을 민다.
+        GENEROUS_FIT_CEILING_EMU = int(1.1 * ov.EMU_PER_INCH)
+        container_bottom = c_xfrm["y"] + c_xfrm["cy"]
+        cumulative_bottom = None
 
         for i, (t_meta, (sp, _meta, final_text, applied_font_size)) in enumerate(entries):
-            content_top = row_anchors[i] + kr_line_h_emu + EXAMPLE_TRANSLATION_GAP_EMU
-            new_y = content_top + cumulative_push
-            if i < n - 1:
-                avail_h = max(row_anchors[i + 1] - content_top, int(0.15 * ov.EMU_PER_INCH))
+            desired_top = row_anchors[i] + kr_line_h_emu + EXAMPLE_TRANSLATION_GAP_EMU
+            if cumulative_bottom is None:
+                new_y = desired_top
             else:
-                # 마지막 항목은 컨테이너 바닥까지 남는 공간을 쓴다.
-                avail_h = max((c_xfrm["y"] + c_xfrm["cy"]) - new_y, int(0.15 * ov.EMU_PER_INCH))
+                new_y = max(desired_top, cumulative_bottom + EXAMPLE_TRANSLATION_GAP_EMU)
+            pushed_down = new_y - desired_top
 
             new_x, new_cx = c_xfrm["x"], c_xfrm["cx"]
             requested_pt = applied_font_size or (
@@ -166,7 +179,7 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
             )
 
             fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
-                final_text, requested_pt, new_cx, avail_h,
+                final_text, requested_pt, new_cx, GENEROUS_FIT_CEILING_EMU,
                 insets_lr_emu=t_meta.get("insets_lr_emu"),
                 insets_tb_emu=t_meta.get("insets_tb_emu"),
             )
@@ -177,12 +190,11 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
             )
             lines = ov.estimate_line_count(final_text, fitted_pt, new_cx, usable_cx_emu=max(usable_cx, 1))
             needed_h = lines * fitted_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT
-            extra = max(0.0, needed_h - avail_h)
 
             try:
                 ops.set_body_pr_wrap_square_autofit(sp)
                 ops.set_shape_xfrm(
-                    sp, x=int(new_x), y=int(new_y), cx=int(new_cx), cy=int(max(avail_h, needed_h))
+                    sp, x=int(new_x), y=int(new_y), cx=int(new_cx), cy=int(needed_h)
                 )
                 if fitted_pt != requested_pt:
                     ops.force_font_size(sp, int(fitted_pt * 100))
@@ -195,15 +207,16 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
                 continue
 
             repositioned_ids.add(t_meta["shape_id"])
-            if extra > 0 or overflow_unresolved:
+            cumulative_bottom = new_y + needed_h
+            went_past_container = cumulative_bottom > container_bottom
+            if pushed_down > EXAMPLE_TRANSLATION_GAP_EMU or overflow_unresolved or went_past_container:
                 review_flags.append({
                     "slide_index": slide_idx, "shape_name": t_meta["shape_name"],
                     "source_text": t_meta["full_text"], "translated_text": final_text,
-                    "issue": "예문 번역이 길어 할당된 공간을 넘어서, 이후 항목들의 위치를 "
-                             "아래로 밀어 배치했습니다 — 다음 요소와 겹치지 않는지 확인해주세요.",
+                    "issue": "예문 번역이 길어 위치가 아래로 밀렸거나 카드 경계를 살짝 넘었을 "
+                             "수 있습니다 — 확인해주세요.",
                     "severity": "warning",
                 })
-            cumulative_push += extra
 
     return repositioned_ids
 
