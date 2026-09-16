@@ -42,6 +42,14 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
         extracted_slide = extracted["slides"][slide_idx]
         extracted_by_id = {sh["shape_id"]: sh for sh in extracted_slide["shapes"]}
 
+        # 말풍선(캐릭터 대사) 슬라이드 여부 — PowerPoint가 자동으로 붙이는 도형
+        # 이름이 "말풍선: 모서리가 둥근 사각형 N" 형태로 저장되므로 "말풍선"으로
+        # 시작하는지만 보면 된다. 이 슬라이드에서 이름이 "번역"인 wrap="square"
+        # 캡션 도형에는 아래에서 쉼표 기준 강제 줄바꿈을 적용한다.
+        bubble_caption_slide = any(
+            (s["shape_name"] or "").startswith("말풍선") for s in extracted_slide["shapes"]
+        )
+
         # 이번 슬라이드에서 실제로 번역이 적용된 도형들 (넘침 보정 대상)
         translated_sp_on_slide = []
 
@@ -101,6 +109,31 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             # 넓히는 보정도 받지만 그마저도 슬라이드 폭의 92%까지만 넓어지므로, 아주 긴
             # 번역문은 폰트 축소 없이는 여전히 슬라이드 밖으로 삐져나갈 수 있었다.
             requested_pt = force_sz_pt or (meta["font_sizes_pt"][0] if meta["font_sizes_pt"] else 18)
+
+            # ── 말풍선 캡션 도형 전용: 쉼표 기준 강제 줄바꿈 ──────────────────
+            # 사용자 확인 사항: 4번/26번 같은 캐릭터+말풍선 슬라이드는 번역하면
+            # 문장이 거의 항상 길어지는데, 쉼표가 있으면 한 줄에 다 들어가는
+            # 경우라도 항상 그 지점에서 2줄로 나눠야 한다 — PowerPoint 자동
+            # 워드랩(임의의 단어 경계에서 잘림)에 맡기지 않기 위함. 아래
+            # fit_font_size_to_box 호출보다 먼저 텍스트에 "\n"을 넣어야
+            # 폰트/높이 계산이 실제 2줄 레이아웃 기준으로 정확히 이루어진다.
+            if (
+                bubble_caption_slide
+                and meta["shape_name"] == "번역"
+                and meta["wrap"] == "square"
+                and not translated_paragraphs
+                and translated_text
+            ):
+                comma_lines = ov.split_at_best_comma(translated_text, requested_pt)
+                if comma_lines:
+                    translated_text = "\n".join(comma_lines)
+                    review_flags.append({
+                        "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                        "source_text": meta["full_text"], "translated_text": translated_text,
+                        "issue": "말풍선 캡션 도형 — 쉼표 지점에서 2줄로 자동 줄바꿈했습니다.",
+                        "severity": "info",
+                    })
+
             fit_note = None
             if meta["xfrm_emu"] and meta["wrap"] != "none":
                 text_for_fit = (
@@ -111,6 +144,8 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
                     text_for_fit, requested_pt,
                     meta["xfrm_emu"]["cx"], meta["xfrm_emu"]["cy"],
+                    insets_lr_emu=meta.get("insets_lr_emu"),
+                    insets_tb_emu=meta.get("insets_tb_emu"),
                 )
                 if fitted_pt < requested_pt:
                     if overflow_unresolved:
