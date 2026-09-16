@@ -17,7 +17,7 @@
       <tr>
         <td><a href="{{ url_for('projects.detail', project_id=p['id']) }}">{{ p['name'] }}</a></td>
         <td>{{ languages.get(p['target_lang'], {}).get('label', p['target_lang']) }}</td>
-        <td><span class="stage-pill">{{ p['stage'] }}</span></td>
+        <td><span class="stage-pill {{ 'stalled' if p['stalled'] else '' }}">{{ p['stage'] }}{{ ' ⚠ 멈춤' if p['stalled'] else '' }}</span></td>
         <td class="muted">{{ p['updated_at'] }}</td>
         <td><a href="{{ url_for('projects.detail', project_id=p['id']) }}">열기 →</a></td>
       </tr>
