@@ -6,6 +6,7 @@ culturefi-ppt-translation 스킬 문서의 핵심 함수들을 그대로 이식�
 실제 PPTX XML에 정확히 반영하는 역할만 담당한다. 판단은 slide_extractor.py /
 translator.py 쪽에서 이루어진다.
 """
+import copy
 from lxml import etree
 from pptx.oxml.ns import qn
 
@@ -91,6 +92,21 @@ def apply_target_font_to_run(run_elem, lang_code, font_name, is_complex_script=F
 
     if mixed_with_korean:
         rPr.set('b', '1' if force_bold is None else ('1' if force_bold else '0'))
+        # 한국어 문법 용어를 의도적으로 원어 유지하면서 나머지는 목표 언어로 번역한
+        # "혼합" 런은, 예전엔 여기서 그냥 return해서 a:latin(라틴/키릴 문자용 폰트
+        # 슬롯)을 전혀 지정하지 않았다. 원래 순수 한국어 전용이던 도형은 a:ea(동아시아
+        # 폰트)만 명시돼 있고 a:latin은 테마 기본값에 의존하는 경우가 흔한데, 번역 후
+        # 키릴/라틴 문자가 이 런에 처음 섞여 들어가면서 그동안 방치돼 있던 테마 기본
+        # 라틴 폰트가 그대로 노출되어(디자인과 전혀 다른 서체로 렌더링됨) 눈에 띄게
+        # 어긋나 보이는 문제가 있었다. PowerPoint/LibreOffice는 유니코드 스크립트별로
+        # a:latin/a:ea/a:cs 중 알맞은 슬롯을 문자 단위로 자동 선택해 렌더링하므로,
+        # a:ea(한국어 부분)는 그대로 둔 채 a:latin(cs 언어면 a:cs)만 목표 폰트로
+        # 맞춰주면 한 런 안에서도 한국어는 기존 폰트, 나머지는 목표 폰트로 올바르게
+        # 섞여 렌더링된다.
+        if is_complex_script:
+            _set_or_create(rPr, qn('a:cs'), font_name, extra={'charset': '0'})
+        else:
+            _set_or_create(rPr, qn('a:latin'), font_name)
         return
 
     rPr.set('b', '0' if force_bold is None else ('1' if force_bold else '0'))
@@ -115,6 +131,34 @@ def _set_or_create(rPr, tag, typeface, extra=None):
             elem.set(k, v)
 
 
+def _append_extra_lines(base_run, extra_lines):
+    """base_run은 이미 텍스트/폰트/크기/색상까지 다 적용된 상태의 <a:r> — 이걸 그대로
+    복제해 각 추가 줄을 <a:br/> + 복제된 run으로 원래 run 뒤에 순서대로 이어붙인다.
+
+    OOXML은 <a:t> 텍스트 안의 리터럴 개행 문자("\\n")를 줄바꿈으로 렌더링하지
+    않는다 — 반드시 <a:br/> 요소가 있어야 실제로 줄이 바뀐다. 그런데 번역 모델은
+    "예문"/"구조" 박스처럼 원래 한 문단 안에 여러 줄(수동 줄바꿈)이 들어있던 도형을
+    번역할 때 translated_text 하나에 줄 구분을 "\\n"으로만 표시해 돌려주는 경우가
+    있는데, 예전엔 이 문자열을 그대로 <a:t>에 밀어넣기만 해서 렌더링 시 여러 줄이
+    아니라 한 줄로 이어져 도형 옆(또는 밖)으로 삐져나가는 원인이 됐다 (실제 사례:
+    문법 템플릿 "예문" 박스 — 번역문이 1)/2)/3) 구분 없이 한 줄로 이어짐).
+    fit_font_size_to_box()의 줄 수 계산은 애초에 "\\n" = 새 줄"이라고 가정하고
+    높이를 추정하므로, 여기서 실제로 그 가정대로 <a:br/>을 만들어주면 넘침 계산과
+    실제 렌더링 결과가 다시 일치하게 된다."""
+    anchor = base_run
+    for line in extra_lines:
+        br = etree.Element(qn('a:br'))
+        anchor.addnext(br)
+        anchor = br
+        new_run = copy.deepcopy(base_run)
+        new_t = new_run.find(qn('a:t'))
+        if new_t is None:
+            new_t = etree.SubElement(new_run, qn('a:t'))
+        new_t.text = line
+        anchor.addnext(new_run)
+        anchor = new_run
+
+
 def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex=False,
                        force_sz=None, force_bold=None, force_color=None):
     """일반(흰색 아님) 도형 번역 적용. 여러 run은 첫 run으로 합치고 나머지는 비운다.
@@ -123,9 +167,10 @@ def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex
     all_runs = list(sp_elem.iter(qn('a:r')))
     if not all_runs:
         return
+    lines = (translated_text or "").split("\n")
     t = all_runs[0].find(qn('a:t'))
     if t is not None:
-        t.text = translated_text
+        t.text = lines[0]
     apply_target_font_to_run(all_runs[0], lang_code, font_name, is_complex, force_bold=force_bold)
     if force_sz is not None:
         rPr = all_runs[0].find(qn('a:rPr'))
@@ -142,6 +187,8 @@ def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex
         t = run.find(qn('a:t'))
         if t is not None:
             t.text = ''
+    if len(lines) > 1:
+        _append_extra_lines(all_runs[0], lines[1:])
 
 
 def restore_shape_translation(sp_elem, translated_text, lang_code, font_name, is_complex=False,
@@ -152,9 +199,10 @@ def restore_shape_translation(sp_elem, translated_text, lang_code, font_name, is
     all_runs = list(sp_elem.iter(qn('a:r')))
     if not all_runs:
         return
+    lines = (translated_text or "").split("\n")
     t = all_runs[0].find(qn('a:t'))
     if t is not None:
-        t.text = translated_text
+        t.text = lines[0]
     apply_target_font_to_run(all_runs[0], lang_code, font_name, is_complex, force_bold=force_bold)
     if force_sz is not None:
         rPr = all_runs[0].find(qn('a:rPr'))
@@ -168,6 +216,8 @@ def restore_shape_translation(sp_elem, translated_text, lang_code, font_name, is
         t = run.find(qn('a:t'))
         if t is not None:
             t.text = ''
+    if len(lines) > 1:
+        _append_extra_lines(all_runs[0], lines[1:])
 
 
 def apply_multi_paragraph(sp_elem, line_translations, lang_code, font_name, is_complex=False,
