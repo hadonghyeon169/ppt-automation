@@ -3,7 +3,41 @@
 매번 db_path를 받아 독립 커넥션으로 동작한다 (스레드 안전).
 """
 import json
+import datetime as _dt
 from . import db
+
+
+# ── 진행 중 단계가 "멈춤"인지 감지 ──────────────────────────────────────────
+# 번역/음성생성/최종검수는 모두 threading.Thread로 백그라운드 실행되는데, 그 스레드가
+# 돌던 도중 서버 프로세스 자체가 재시작되면(재배포, 크래시 등) 스레드가 예외 핸들러를
+# 거치지 못한 채 그냥 사라진다 — DB에는 실패로 기록되지 않고 진행 중 단계(stage)와
+# updated_at만 그 순간에 멈춘 채로 영원히 남는다. update_project()는 호출될 때마다
+# updated_at을 현재 시각으로 갱신하므로, "진행 중 단계인데 updated_at이 오래전"이면
+# 멈춘 것으로 간주할 수 있다.
+IN_PROGRESS_STAGES = {"translating", "tts_running", "final_running"}
+STALL_SECONDS = 300  # 진행 중 단계에서 5분 넘게 갱신이 없으면 멈춘 것으로 판단
+
+
+def seconds_since_update(project):
+    """project['updated_at']은 sqlite datetime('now')로 저장된 UTC 문자열('YYYY-MM-DD HH:MM:SS').
+    없거나 파싱할 수 없으면(레거시 데이터 등) None을 반환해 "판단 불가"로 처리한다."""
+    raw = project.get("updated_at") if project else None
+    if not raw:
+        return None
+    try:
+        updated = _dt.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return (_dt.datetime.utcnow() - updated).total_seconds()
+
+
+def is_stalled(project):
+    """진행 중 단계(translating/tts_running/final_running)인데 STALL_SECONDS 넘게
+    아무 갱신이 없으면 True. 화면에서 "멈춤" 표시와 재시도 버튼을 띄우는 데 쓴다."""
+    if not project or project.get("stage") not in IN_PROGRESS_STAGES:
+        return False
+    secs = seconds_since_update(project)
+    return secs is not None and secs > STALL_SECONDS
 
 
 def _conn(db_path):
