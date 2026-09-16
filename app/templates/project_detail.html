@@ -183,6 +183,9 @@
       <div class="row" style="margin-top:16px;">
         <a class="btn" href="{{ url_for('projects.download', project_id=project['id'], which='final') }}">최종 PPT 다운로드</a>
         <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='original') }}">원본 다운로드</a>
+        <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}">
+          <button class="btn secondary" type="submit">최종 검수 다시 실행</button>
+        </form>
       </div>
 
     {% elif project['stage'] == 'failed' %}
