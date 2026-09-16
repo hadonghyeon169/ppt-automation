@@ -9,6 +9,7 @@ translator.py 쪽에서 이루어진다.
 import copy
 from lxml import etree
 from pptx.oxml.ns import qn
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
 
 def has_chinese(text: str) -> bool:
@@ -479,12 +480,24 @@ def embed_autoplay_audio(slide, audio_path, mime_type, slide_width_emu, slide_he
     movie_shape = slide.shapes.add_movie(audio_path, left, top, size, size, mime_type=mime_type)
     sp_elem = movie_shape._element
 
-    # add_movie()는 <a:videoFile>을 쓰는데, 오디오 파트이므로 스펙에 맞게 <a:audioFile>로 교체한다
-    # (PowerPoint/LibreOffice 모두 관대하게 처리하지만 정확한 태그를 쓰는 게 안전하다).
+    # add_movie()는 <a:videoFile r:link="rIdX">를 쓰는데, rIdX는 슬라이드 .rels에
+    # RT.VIDEO(.../relationships/video) 타입으로만 등록된다 — RT.AUDIO 관계는 전혀
+    # 만들어주지 않는다. 태그만 <a:audioFile>로 바꾸고 r:link는 그대로 두면, 실제
+    # 저장되는 파일은 "오디오 엘리먼트가 비디오 타입 관계를 참조"하는 스펙 위반
+    # 상태가 된다. LibreOffice 기반 미리보기 렌더링이나 이 앱의 길이/전사 QA는 이걸
+    # 관대하게 넘어가서 "삽입 완료"로 보이지만, 실제 PowerPoint에서 열면 부적합한
+    # 관계로 판단해 미디어를 조용히 무시/제거한다 — 그래서 "PPT는 받았는데 음성이
+    # 하나도 안 들어가 있다"는 문제가 발생했다. 같은 미디어 파트를 가리키는 RT.AUDIO
+    # 관계를 별도로 새로 만들어 r:link를 그쪽으로 바꿔줘야 스펙에 맞는 오디오가 된다.
     nvPr = sp_elem.find(qn('p:nvPicPr') + '/' + qn('p:nvPr'))
     if nvPr is not None:
         video_file = nvPr.find(qn('a:videoFile'))
         if video_file is not None:
+            old_rId = video_file.get(qn('r:link'))
+            slide_part = slide.part
+            media_part = slide_part.related_part(old_rId)
+            audio_rId = slide_part.relate_to(media_part, RT.AUDIO)
+            video_file.set(qn('r:link'), audio_rId)
             video_file.tag = qn('a:audioFile')
 
     shape_id = sp_elem.find(qn('p:nvPicPr') + '/' + qn('p:cNvPr')).get('id')
