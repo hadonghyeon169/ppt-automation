@@ -288,6 +288,20 @@ def force_run_color(rPr, hex_color):
     rPr.insert(insert_idx, sf)
 
 
+def force_font_size(sp_elem, sz):
+    """이미 텍스트가 적용된 도형의 폰트 크기만 다시 설정한다 (텍스트 내용은 건드리지 않음).
+
+    예문 번역 재배치(pptx_pipeline._reposition_example_translations)처럼, 본 번역
+    적용 루프가 끝난 뒤 별도 단계에서 도형을 새 슬롯 크기에 맞춰 다시 축소해야 할
+    때 쓴다. apply_shape_level/restore_shape_translation을 다시 부르면 텍스트를
+    재적용하는 부작용이 있어(첫 run으로 합치고 나머지 run 비우기 등), run의 sz
+    속성만 갱신하는 전용 헬퍼를 둔다."""
+    for r in sp_elem.iter(qn('a:r')):
+        rPr = r.find(qn('a:rPr'))
+        if rPr is not None:
+            rPr.set('sz', str(int(sz)))
+
+
 def get_body_pr_wrap(sp_elem):
     txBody = sp_elem.find(qn('p:txBody'))
     if txBody is None:
