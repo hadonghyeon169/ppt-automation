@@ -343,12 +343,39 @@ def run_tts_stage(db_path, projects_dir, project_id, voice_id, typecast_model="s
                 return
             repo.add_event(db_path, project_id, f"실패한 오디오만 재시도 시작 ({len(assets)}개 슬라이드)")
         else:
+            # PPT 전체 슬라이드가 아니라 "예문/정의/구조" 템플릿 슬라이드(문법 설명
+            # 예문 박스)에만 음성을 넣는다 — 사용자 확인: "초급2 12강" 기준 13번/38번
+            # 슬라이드에만 러시아어 음성이 필요하고, 다른 슬라이드에는 필요 없음. 슬라이드
+            # 번호는 PPT마다 다르므로 원본 PPT를 다시 추출해 마커로 판단한다 (자세한
+            # 배경은 slide_extractor.get_audio_required_slide_indices 참고).
+            original_extracted = slide_extractor.extract_presentation(project["original_path"])
+            audio_required = set(slide_extractor.get_audio_required_slide_indices(original_extracted))
+            repo.add_event(
+                db_path, project_id,
+                f"음성이 필요한 슬라이드(예문/정의/구조 템플릿) {len(audio_required)}개 감지: "
+                f"{sorted(i + 1 for i in audio_required)}번 — 이 슬라이드에만 음성을 생성합니다.",
+            )
+
             slide_texts = repo.list_slide_texts(db_path, project_id)
             by_slide = {}
             for r in slide_texts:
                 if r["translated_text"]:
                     by_slide.setdefault(r["slide_index"], []).append(r["translated_text"])
-            slide_scripts = [(idx, ". ".join(texts)) for idx, texts in sorted(by_slide.items())]
+            slide_scripts = [(idx, ". ".join(texts)) for idx, texts in sorted(by_slide.items())
+                              if idx in audio_required]
+
+            # 음성이 꼭 필요하다고 판단된 슬라이드인데 번역문이 없어 스크립트를 만들
+            # 수 없는 경우 — 조용히 건너뛰지 않고 눈에 띄게 남긴다 ("무조건 확실하게
+            # 캐치" 요구사항).
+            found = {idx for idx, _ in slide_scripts}
+            for idx in sorted(audio_required - found):
+                repo.add_event(
+                    db_path, project_id,
+                    f"슬라이드 {idx + 1}은(는) 음성이 필요한 슬라이드로 판단되었지만 번역된 텍스트가 "
+                    f"없어 음성을 생성할 수 없습니다 — 번역 단계를 먼저 확인하세요.",
+                    level="error",
+                )
+
             repo.replace_audio_assets_pending(db_path, project_id, slide_scripts)
             assets = repo.list_audio_assets(db_path, project_id)
 
@@ -484,24 +511,51 @@ def run_final_review_stage(db_path, projects_dir, project_id, languages):
         # 생성된 음성이 디스크에만 저장되고 최종 PPT에는 전혀 반영되지 않았다).
         # 슬라이드 진입 시 자동 재생되도록 삽입하고, 원본 translated 파일은 보존한
         # 채 별도 파일로 저장한다.
+        # 음성이 꼭 필요한 슬라이드(예문/정의/구조 템플릿)만 삽입 대상으로 한 번 더
+        # 걸러낸다 — TTS 단계에서 이미 이 슬라이드들만 생성하도록 걸러뒀지만, 예전에
+        # 만들어진 프로젝트의 잔여 asset이나 다른 경로로 들어온 asset이 있어도 최종
+        # 삽입 단계에서 다시 한번 "13/38번 슬라이드 유형에만" 규칙을 강제한다.
+        original_extracted = slide_extractor.extract_presentation(project["original_path"])
+        audio_required = set(slide_extractor.get_audio_required_slide_indices(original_extracted))
+        assets_for_embed = [a for a in assets if a["slide_index"] in audio_required]
+
         pdir = _project_dir(projects_dir, project_id)
         final_dir = os.path.join(pdir, "final")
         final_name = os.path.basename(project["translated_path"])
         final_pptx_path = os.path.join(final_dir, final_name)
         try:
             embedded_count, embed_skipped = audio_embed.embed_audio_into_pptx(
-                project["translated_path"], assets, final_pptx_path,
+                project["translated_path"], assets_for_embed, final_pptx_path,
             )
             repo.add_review_flags(db_path, project_id, "final", [{
                 "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
-                "issue": f"오디오 {embedded_count}개 슬라이드에 자동재생으로 삽입 완료.",
+                "issue": f"오디오 {embedded_count}개 슬라이드에 자동재생으로 삽입 완료 "
+                         f"(음성 필요 슬라이드: {sorted(i + 1 for i in audio_required)}번).",
                 "severity": "info",
             }])
             for s in embed_skipped:
+                # 음성이 꼭 필요한 슬라이드에서 삽입이 건너뛰어진 경우는 경고가 아니라
+                # 오류로 표시해 "무조건 확실하게" 요구사항대로 눈에 띄게 막는다.
+                severity = "error" if s["slide_index"] in audio_required else "warning"
                 repo.add_review_flags(db_path, project_id, "final", [{
                     "slide_index": s["slide_index"], "shape_name": f"오디오(슬라이드 {s['slide_index']+1})",
                     "source_text": None, "translated_text": None,
-                    "issue": f"오디오 삽입 건너뜀: {s['reason']}", "severity": "warning",
+                    "issue": f"오디오 삽입 건너뜀: {s['reason']}", "severity": severity,
+                }])
+
+            # 필요 슬라이드인데 애초에 asset 자체가 없어(예: TTS 단계를 아직 안 돌렸거나
+            # only_failed 재시도에서 빠진 경우) embed_skipped 목록에도 안 잡히는 경우까지
+            # 명시적으로 확인한다 — 조용히 빠지는 걸 막기 위한 마지막 안전망.
+            reported = {s["slide_index"] for s in embed_skipped} | {
+                a["slide_index"] for a in assets_for_embed if a["status"] == "done"
+            }
+            for idx in sorted(audio_required - reported):
+                repo.add_review_flags(db_path, project_id, "final", [{
+                    "slide_index": idx, "shape_name": f"오디오(슬라이드 {idx+1})",
+                    "source_text": None, "translated_text": None,
+                    "issue": "음성이 필요한 슬라이드(예문/정의/구조)인데 생성된 음성 자산이 없습니다 — "
+                             "음성 생성 단계를 먼저 실행하세요.",
+                    "severity": "error",
                 }])
         except Exception as e:
             logger.error("audio embed failed: %s", traceback.format_exc())
