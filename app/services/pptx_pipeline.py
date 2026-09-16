@@ -144,7 +144,15 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 and not translated_paragraphs
                 and translated_text
             ):
-                comma_lines = ov.split_at_best_comma(translated_text, requested_pt)
+                usable_cx_for_split = None
+                if meta["xfrm_emu"]:
+                    insets_lr = meta.get("insets_lr_emu")
+                    box_cx = meta["xfrm_emu"]["cx"]
+                    usable_cx_for_split = max(
+                        box_cx - insets_lr if insets_lr is not None else int(box_cx * ov.USABLE_WIDTH_RATIO),
+                        1,
+                    )
+                comma_lines = ov.split_at_best_comma(translated_text, requested_pt, usable_cx_for_split)
                 if comma_lines:
                     translated_text = "\n".join(comma_lines)
                     review_flags.append({
