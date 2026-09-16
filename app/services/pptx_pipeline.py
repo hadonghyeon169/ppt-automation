@@ -11,6 +11,7 @@ from pptx import Presentation
 
 from . import ppt_xml_ops as ops
 from . import overflow as ov
+from .slide_extractor import AUDIO_REQUIRED_MARKERS
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,174 @@ def _boxes_horizontally_adjacent(a, b, slide_width_emu):
     right_gap = b['x'] - (a['x'] + a['cx'])
     left_gap = a['x'] - (b['x'] + b['cx'])
     return (0 <= right_gap <= gap) or (0 <= left_gap <= gap)
+
+
+# ── "예문" 번호 예제 번역 재배치 ────────────────────────────────────────────
+# 문법 설명 "예문" 슬라이드(AUDIO_REQUIRED_MARKERS로 식별되는 13번/38번 유형)는
+# "1)...2)...3)..." 형태로 번호 매겨진 한국어 예문이 한 도형(여러 문단, lnSpc 300%로
+# 문단마다 넉넉한 세로 "슬롯"을 가짐)에 들어있고, 각 문단에 대응하는 번역이 별도
+# 도형("번역")으로 템플릿에 고정 배치되어 있다. 기존엔 이 번역 도형들이 한국어
+# 문단 오른쪽 멀리에 있어, 번역문이 길어지면 카드 밖으로 넘치거나(13번 사례) 다음
+# 예문과 위아래로 겹쳤다(38번 사례). 사용자가 AskUserQuestion으로 확정한 방식대로,
+# 각 번역을 대응 한국어 문단 "바로 아래"로 옮기고, 한 항목이 자기 슬롯에 다 안
+# 들어가면 그 초과분만큼 이후 항목들을 함께 아래로 민다.
+EXAMPLE_TRANSLATION_GAP_EMU = int(0.05 * ov.EMU_PER_INCH)
+# 300%(lnSpc spcPct=300000)는 문단 "슬롯" 전체 간격이지, 실제 한국어 텍스트 한
+# 줄의 렌더링 높이가 아니다 — 슬롯 안에서 번역이 들어갈 공간을 구하려면 실제
+# 한 줄 높이만 빼야 하므로, 일반적인 줄간격 배수(1.3배)를 따로 쓴다.
+EXAMPLE_KR_LINE_HEIGHT_FACTOR = 1.3
+
+
+def _find_example_translation_groups(extracted_slide):
+    """"예문" 슬라이드에서, 여러 문단짜리 한국어 예문 컨테이너 도형과 그 옆에 개별
+    배치된 번역("번역"으로 이름 붙은) 도형들을 쌍으로 묶는다. 컨테이너 문단 수와
+    번역 도형 개수가 정확히 일치하고, 번역 도형들이 컨테이너의 세로 범위 안에
+    걸쳐 있는 경우만 그룹으로 인정한다(오탐 방지) — 실제 관찰된 구조(초급2 12강
+    13/38번 슬라이드)에서 템플릿이 각 한국어 문단과 번역 도형을 y좌표로 나란히
+    배치해두는 패턴에 기반한다."""
+    # 문단 수 조건을 3개 이상 + 모든 문단이 비어있지 않음으로 좁힌다. 같은 "예문"
+    # 슬라이드 안에는 "정의"/"구조" 문법 설명 상자도 함께 있는데, 이들은 문단이
+    # 2개뿐이고(그중 하나는 라벨만 있거나 비어있는 경우가 많음: 예) ['정의', ''])
+    # 번역 도형 개수도 우연히 일치할 수 있어(실제로 2문단 규칙 설명 상자 하나가
+    # 그런 경우였다) 잘못 걸려들 위험이 있었다. 실제 두 "예문" 상자(13/38번)는
+    # 항상 3문단이고 각 문단이 완전한 예문 문장이라 이 조건으로 정확히 구분된다.
+    shapes = extracted_slide["shapes"]
+    containers = [
+        s for s in shapes
+        if s["paragraph_count"] >= 3
+        and all((p or "").strip() for p in s.get("paragraph_texts") or [])
+        and "번역" not in (s["shape_name"] or "")
+        and s["has_korean"]
+        and s["xfrm_emu"]
+        and not s.get("is_grouped")
+    ]
+    translation_shapes = [
+        s for s in shapes
+        if (s["shape_name"] or "") == "번역"
+        and s["xfrm_emu"]
+        and not s.get("is_grouped")
+    ]
+    groups = []
+    used_ids = set()
+    for container in containers:
+        n = container["paragraph_count"]
+        c = container["xfrm_emu"]
+        c_y0, c_y1 = c["y"], c["y"] + c["cy"]
+        # y축 겹침만으로는 슬라이드 반대편(왼쪽)에 있는, 전혀 다른 상자(예: "정의"/
+        # "구조" 규칙 설명 상자의 번역)까지 끌려들어올 수 있다(실제 겪음: 왼쪽에
+        # 있는 번역 도형이 우연히 이 컨테이너의 y범위와 겹쳐 후보에 잡힘) — 템플릿상
+        # 번역 도형은 항상 한국어 컨테이너의 왼쪽 경계보다 오른쪽에 있으므로 x 조건도
+        # 함께 건다.
+        candidates = [
+            s for s in translation_shapes
+            if s["shape_id"] not in used_ids
+            and s["xfrm_emu"]["x"] >= c["x"]
+            and (s["xfrm_emu"]["y"] + s["xfrm_emu"]["cy"]) > c_y0
+            and s["xfrm_emu"]["y"] < c_y1
+        ]
+        if len(candidates) != n:
+            continue  # 개수가 안 맞으면 오탐 가능성이 있으니 건드리지 않고 건너뜀
+        candidates.sort(key=lambda s: s["xfrm_emu"]["y"])
+        for s in candidates:
+            used_ids.add(s["shape_id"])
+        groups.append({"container": container, "translations": candidates})
+    return groups
+
+
+def _reposition_example_translations(extracted_slide, translated_by_shape_id, slide_idx, review_flags):
+    """예문 슬라이드에서 각 번역 도형을 대응하는 한국어 문단 바로 아래로 옮기고,
+    슬롯을 넘치는 항목이 있으면 그 초과분만큼 이후 항목을 아래로 민다.
+    반환: 재배치에 성공한 shape_id 집합 (이후 일반 넘침 보정 루프에서 제외해야 함)."""
+    repositioned_ids = set()
+    combined_text = "".join(s["full_text"] for s in extracted_slide["shapes"])
+    if not all(marker in combined_text for marker in AUDIO_REQUIRED_MARKERS):
+        # 일반 슬라이드에 영향을 주지 않도록, 확실한 "예문" 슬라이드에서만 동작한다.
+        return repositioned_ids
+
+    for group in _find_example_translation_groups(extracted_slide):
+        container = group["container"]
+        entries = []
+        ok = True
+        for t_meta in group["translations"]:
+            entry = translated_by_shape_id.get(t_meta["shape_id"])
+            if not entry:
+                ok = False
+                break
+            entries.append((t_meta, entry))
+        if not ok or not entries:
+            # 그룹 중 하나라도 이번에 번역되지 않았으면(스킵/누락 등) 안전하게
+            # 기존 배치를 그대로 둔다 — 어설프게 절반만 옮기지 않는다.
+            continue
+
+        c_xfrm = container["xfrm_emu"]
+        n = len(entries)
+        kr_font_pt = container["font_sizes_pt"][0] if container.get("font_sizes_pt") else 27
+        kr_line_h_emu = kr_font_pt * EXAMPLE_KR_LINE_HEIGHT_FACTOR * ov.EMU_PER_PT
+        # 컨테이너 높이를 문단 수로 균등분할해서 슬롯 시작점을 역산하면 실제와 어긋난다
+        # — 300% 줄간격 문단은 렌더러(LibreOffice로 실측/렌더 검증함)가 그 여백
+        # 대부분을 텍스트 "앞"에 두는 것으로 관찰되어, 한국어 텍스트 자체가 슬롯
+        # 맨 위가 아니라 슬롯 중간 즈음에서 시작한다. 반면 템플릿이 원래 배치해둔
+        # 번역 도형의 y좌표는 "이 문단과 같은 행"이라는 실측 기준점이므로(사용자가
+        # 준 참고 파일에서 확인: 각 번역이 대응 한국어 문단과 같은 행에 나란히
+        # 배치되어 있었음), 그 y좌표를 그대로 기준점으로 삼아 그 아래로 내린다.
+        row_anchors = [t_meta["xfrm_emu"]["y"] for t_meta, _ in entries]
+        cumulative_push = 0.0
+
+        for i, (t_meta, (sp, _meta, final_text, applied_font_size)) in enumerate(entries):
+            content_top = row_anchors[i] + kr_line_h_emu + EXAMPLE_TRANSLATION_GAP_EMU
+            new_y = content_top + cumulative_push
+            if i < n - 1:
+                avail_h = max(row_anchors[i + 1] - content_top, int(0.15 * ov.EMU_PER_INCH))
+            else:
+                # 마지막 항목은 컨테이너 바닥까지 남는 공간을 쓴다.
+                avail_h = max((c_xfrm["y"] + c_xfrm["cy"]) - new_y, int(0.15 * ov.EMU_PER_INCH))
+
+            new_x, new_cx = c_xfrm["x"], c_xfrm["cx"]
+            requested_pt = applied_font_size or (
+                t_meta["font_sizes_pt"][0] if t_meta.get("font_sizes_pt") else 20
+            )
+
+            fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
+                final_text, requested_pt, new_cx, avail_h,
+                insets_lr_emu=t_meta.get("insets_lr_emu"),
+                insets_tb_emu=t_meta.get("insets_tb_emu"),
+            )
+            usable_cx = (
+                new_cx - t_meta["insets_lr_emu"]
+                if t_meta.get("insets_lr_emu") is not None
+                else int(new_cx * ov.USABLE_WIDTH_RATIO)
+            )
+            lines = ov.estimate_line_count(final_text, fitted_pt, new_cx, usable_cx_emu=max(usable_cx, 1))
+            needed_h = lines * fitted_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT
+            extra = max(0.0, needed_h - avail_h)
+
+            try:
+                ops.set_body_pr_wrap_square_autofit(sp)
+                ops.set_shape_xfrm(
+                    sp, x=int(new_x), y=int(new_y), cx=int(new_cx), cy=int(max(avail_h, needed_h))
+                )
+                if fitted_pt != requested_pt:
+                    ops.force_font_size(sp, int(fitted_pt * 100))
+            except Exception as e:
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": t_meta["shape_name"],
+                    "source_text": t_meta["full_text"], "translated_text": final_text,
+                    "issue": f"예문 번역 재배치 중 오류 (수동 확인 필요): {e}", "severity": "warning",
+                })
+                continue
+
+            repositioned_ids.add(t_meta["shape_id"])
+            if extra > 0 or overflow_unresolved:
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": t_meta["shape_name"],
+                    "source_text": t_meta["full_text"], "translated_text": final_text,
+                    "issue": "예문 번역이 길어 할당된 공간을 넘어서, 이후 항목들의 위치를 "
+                             "아래로 밀어 배치했습니다 — 다음 요소와 겹치지 않는지 확인해주세요.",
+                    "severity": "warning",
+                })
+            cumulative_push += extra
+
+    return repositioned_ids
 
 
 def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_meta, out_path):
@@ -302,9 +471,22 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 (sp, meta, translated_text or " ".join(translated_paragraphs or []), applied_font_size)
             )
 
+        # ── "예문" 번역 재배치 (넘침 보정보다 먼저) ───────────────────────
+        # 대상 도형은 여기서 위치/폭/폰트가 이미 최종 확정되므로, 아래 일반 넘침
+        # 보정 루프에서는 건너뛰어야 한다(중복 처리 시 방금 잡은 배치가 다시
+        # 틀어질 수 있음).
+        translated_by_shape_id = {
+            m["shape_id"]: (sp, m, txt, fs) for sp, m, txt, fs in translated_sp_on_slide
+        }
+        repositioned_ids = _reposition_example_translations(
+            extracted_slide, translated_by_shape_id, slide_idx, review_flags
+        )
+
         # ── 넘침(overflow) 보정 ──────────────────────────────────────────
         all_boxes = [sh["xfrm_emu"] for sh in extracted_slide["shapes"] if sh["xfrm_emu"]]
         for sp, meta, final_text, font_size in translated_sp_on_slide:
+            if meta["shape_id"] in repositioned_ids:
+                continue
             xfrm = meta["xfrm_emu"]
             wrap = meta["wrap"]
             if not xfrm or wrap != "none":
