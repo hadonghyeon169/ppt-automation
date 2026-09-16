@@ -29,6 +29,11 @@ def extract_presentation(pptx_path):
             is_grouped = ops.shape_is_grouped(sp)
             wrap = ops.get_body_pr_wrap(sp)
             align = ops.get_paragraph_align(sp)
+            # wrap="none" 도형의 넘침 판정에서 텍스트 상자 내부 여백(lIns+rIns)을
+            # 빼지 않아 실제로 넘치는 번역문을 "안 넘침"으로 오판하던 문제가 있었다
+            # (자세한 배경은 ppt_xml_ops.get_body_pr_insets 참고) — 여기서 함께 뽑아
+            # pptx_pipeline.py의 넘침 보정 계산에 넘겨준다.
+            insets_lr_emu = ops.get_body_pr_insets(sp)
             is_white = ops.has_bg_color(sp)
             runs = list(sp.iter(qn('a:r')))
             bold_flags = []
@@ -69,6 +74,7 @@ def extract_presentation(pptx_path):
                 "align": align,
                 "xfrm_emu": xfrm,
                 "is_grouped": is_grouped,
+                "insets_lr_emu": insets_lr_emu,
             })
         slides_data.append({
             "slide_index": slide_idx,
