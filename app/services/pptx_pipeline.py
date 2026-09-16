@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 
 ADJACENCY_GAP_EMU_RATIO = 0.06  # 슬라이드 폭 대비, 이 이내로 다른 도형이 붙어있으면 "인접 쌍"으로 간주
 
+# 문법 구조 다이어그램에 쓰이는 품사 줄임말 라벨. "받침"과 마찬가지로 어떤 목표 언어로도
+# 번역하지 않고 원문 그대로 유지해야 한다 — 실제 샘플("초급2 12강")에서 "동"/"형" 라벨이
+# 12/14/15/16/17/18/19/20/21/22/23/24/37/39/40/41/42/43번 슬라이드에 동일한 도형
+# (shape_name="모서리가 둥근 직사각형 5")으로 반복해서 나오는데, 번역은 3슬라이드씩 서로
+# 독립된 AI 호출로 처리되다 보니 배치마다 판단이 달라져(예: 12번은 원문 유지, 37번은
+# "Глагол"로 번역) 같은 파일 안에서 라벨이 통일되지 않는 문제가 있었다. skill_prompt.py의
+# "받침" 규칙처럼 프롬프트 지시만으로는 배치 간 일관성을 보장할 수 없으므로, 여기서
+# 코드 레벨로 강제 적용한다 (AI가 어떤 판단을 내렸든 무시하고 항상 원문 유지).
+POS_ABBREVIATION_LABELS = {"동", "명", "형", "부", "관", "감", "조"}
+
 
 def _boxes_horizontally_adjacent(a, b, slide_width_emu):
     """a의 오른쪽(또는 왼쪽) 근처에 b가 있고 y축으로 겹치는지 근사 판단."""
@@ -64,6 +74,16 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             plan = plan_by_shape.get(shape_id)
             meta = extracted_by_id.get(shape_id)
             if not meta:
+                continue
+            if (meta["full_text"] or "").strip() in POS_ABBREVIATION_LABELS:
+                # 품사 줄임말 라벨 — AI의 판단(번역/스킵 여부, plan 유무)과 무관하게 항상
+                # 원문 유지. "누락" 에러로도 잡히지 않도록 plan 존재 여부 확인보다 먼저 처리.
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                    "source_text": meta["full_text"], "translated_text": meta["full_text"],
+                    "issue": "품사 줄임말 라벨(동/명/형/부 등)은 규칙에 따라 번역하지 않고 원문을 그대로 유지했습니다.",
+                    "severity": "info",
+                })
                 continue
             if not plan:
                 # LLM 응답에 이 도형이 아예 없었다 (배치 자체가 스킵됐거나, 응답이 잘렸거나,
