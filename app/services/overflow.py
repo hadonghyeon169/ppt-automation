@@ -48,11 +48,16 @@ def estimate_text_width_emu(text, font_size_pt):
     return int(len(text) * avg_char_width_pt * EMU_PER_PT)
 
 
-def compute_overflow_ratio(text, font_size_pt, shape_cx_emu):
-    if not shape_cx_emu:
+def compute_overflow_ratio(text, font_size_pt, shape_cx_emu, insets_emu=0):
+    """도형 cx(외곽 폭) 전체가 아니라, 텍스트 상자 내부 여백(lIns+rIns=insets_emu)을
+    뺀 실사용 가능 폭 기준으로 넘침 비율을 계산한다. insets_emu를 빼지 않으면
+    실제로는 넘치는 텍스트(예: 좌우 여백이 각 0.15in인 도형)도 비율이 1.05 기준선
+    바로 아래로 나와 넘침 보정이 걸리지 않는 문제가 있었다."""
+    usable_cx = shape_cx_emu - insets_emu
+    if not usable_cx or usable_cx <= 0:
         return 1.0
     width = estimate_text_width_emu(text, font_size_pt)
-    return width / shape_cx_emu
+    return width / usable_cx
 
 
 LINE_SPACING_FACTOR = 1.25  # 줄간격 근사치 (폰트 크기 대비 배수)
@@ -196,11 +201,16 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
     return _best_split(space_points)
 
 
-def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu, max_width_ratio=0.92):
-    """독립적인 제목/안내문 도형: 폭을 늘리고 정렬 기준으로 x를 재조정."""
+def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu,
+                                      insets_emu=0, max_width_ratio=0.92):
+    """독립적인 제목/안내문 도형: 폭을 늘리고 정렬 기준으로 x를 재조정.
+
+    est_width는 텍스트 상자 "내부"에 필요한 폭이므로, 도형의 외곽 cx를 정할 때는
+    좌우 내부 여백(insets_emu)을 다시 더해줘야 한다 — 그렇지 않으면 여백만큼
+    항상 조금씩 모자라게 넓혀서 여전히 넘칠 수 있다."""
     est_width = estimate_text_width_emu(text, font_size_pt)
     max_cx = int(slide_width_emu * max_width_ratio)
-    new_cx = min(max(est_width, xfrm['cx']), max_cx)
+    new_cx = min(max(est_width + insets_emu, xfrm['cx']), max_cx)
 
     old_x, old_cx = xfrm['x'], xfrm['cx']
     if align == 'ctr':
