@@ -165,6 +165,9 @@
         <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}">
           <button class="btn secondary" type="submit">최종 검수 다시 실행</button>
         </form>
+        {% if project['final_path'] %}
+        <a class="btn secondary" href="{{ url_for('projects.download', project_id=project['id'], which='final') }}">최종 PPT 다운로드 (승인 전 미리 확인)</a>
+        {% endif %}
       </div>
       {% if preview_final %}
       <h2 style="margin-top:24px;">최종 렌더링 미리보기</h2>
