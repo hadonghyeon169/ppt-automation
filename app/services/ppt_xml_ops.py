@@ -297,6 +297,32 @@ def get_body_pr_wrap(sp_elem):
     return bodyPr.get('wrap')
 
 
+DEFAULT_LR_INSET_EMU = 91440  # PowerPoint 기본값(lIns/rIns 미지정 시 각 0.1in)
+
+
+def get_body_pr_insets(sp_elem):
+    """도형 텍스트 상자의 좌우 내부 여백(lIns+rIns) 합계를 EMU로 반환한다.
+
+    wrap="none" 도형의 넘침 판정(overflow.compute_overflow_ratio)이 그동안 도형의
+    전체 cx(외곽 폭)를 텍스트가 다 쓸 수 있는 것처럼 계산해서, 실제로는 넘치는
+    번역문도 "안 넘침"으로 오판하는 경우가 있었다(실사례: "예문" 번역 도형들이
+    lIns=rIns=137160 EMU, 즉 좌우 합 0.3in을 차지하는데 이를 빼지 않고 계산하면
+    ratio가 1.05 기준선 바로 아래(0.98~0.99)로 나와 보정이 아예 안 걸렸다 — 실제
+    사용 가능 폭 기준으로는 1.05~1.06으로 넘침).
+    bodyPr나 lIns/rIns 속성이 없어도 PowerPoint 기본값(0.1in=91440 EMU)이 적용되므로
+    0이 아니라 기본값을 반환한다."""
+    txBody = sp_elem.find(qn('p:txBody'))
+    if txBody is None:
+        return DEFAULT_LR_INSET_EMU * 2
+    bodyPr = txBody.find(qn('a:bodyPr'))
+    if bodyPr is None:
+        return DEFAULT_LR_INSET_EMU * 2
+    l_raw, r_raw = bodyPr.get('lIns'), bodyPr.get('rIns')
+    l_ins = int(l_raw) if l_raw is not None else DEFAULT_LR_INSET_EMU
+    r_ins = int(r_raw) if r_raw is not None else DEFAULT_LR_INSET_EMU
+    return l_ins + r_ins
+
+
 def set_body_pr_wrap_square_autofit(sp_elem):
     """인접 라벨-내용 쌍 도형용: wrap을 square로 바꾸고 높이만 늘어나게(spAutoFit) 설정."""
     txBody = sp_elem.find(qn('p:txBody'))
