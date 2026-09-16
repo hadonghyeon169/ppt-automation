@@ -324,6 +324,30 @@ def get_body_pr_insets(sp_elem):
     return l_ins + r_ins
 
 
+DEFAULT_TB_INSET_EMU = 45720  # PowerPoint 기본값(tIns/bIns 미지정 시 각 0.05in)
+
+
+def get_body_pr_insets_tb(sp_elem):
+    """도형 텍스트 상자의 상하 내부 여백(tIns+bIns) 합계를 EMU로 반환한다.
+
+    wrap="square"(word-wrap) 도형의 높이 적합 판정(overflow.fit_font_size_to_box)이
+    실제 tIns/bIns 대신 고정 비율(USABLE_HEIGHT_RATIO=0.88)로 근사하다 보니, 이
+    비율이 실제 여백보다 넉넉하게 잡히는 도형에서는 "이 폰트 크기면 들어간다"고
+    오판하고, 실제로는 줄바꿈된 텍스트가 도형 아래로 삐져나와 다음 도형과 겹쳐
+    보이는 문제가 있었다(실사례: 문법 예문 번역 도형 중 폭이 좁아 2줄로 감기는
+    도형에서, 높이 계산이 낙관적이어서 폰트가 줄어들지 않고 그대로 겹침)."""
+    txBody = sp_elem.find(qn('p:txBody'))
+    if txBody is None:
+        return DEFAULT_TB_INSET_EMU * 2
+    bodyPr = txBody.find(qn('a:bodyPr'))
+    if bodyPr is None:
+        return DEFAULT_TB_INSET_EMU * 2
+    t_raw, b_raw = bodyPr.get('tIns'), bodyPr.get('bIns')
+    t_ins = int(t_raw) if t_raw is not None else DEFAULT_TB_INSET_EMU
+    b_ins = int(b_raw) if b_raw is not None else DEFAULT_TB_INSET_EMU
+    return t_ins + b_ins
+
+
 def set_body_pr_wrap_square_autofit(sp_elem):
     """인접 라벨-내용 쌍 도형용: wrap을 square로 바꾸고 높이만 늘어나게(spAutoFit) 설정."""
     txBody = sp_elem.find(qn('p:txBody'))
