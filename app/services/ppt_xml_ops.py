@@ -159,6 +159,28 @@ def _append_extra_lines(base_run, extra_lines):
         anchor = new_run
 
 
+def force_multiline(sp_elem, lines):
+    """apply_shape_level/restore_shape_translation로 이미 번역(폰트/크기/색까지)이
+    적용된 도형의 텍스트를, 그 위에 그대로 lines 리스트로 다시 줄바꿈한다.
+
+    그룹(p:grpSp) 안에 있어 박스 자동 확장(가로)이 불가능한 wrap="none" 도형이
+    폰트 축소만으로는 폭 넘침을 해결하지 못할 때, overflow.split_text_for_width로
+    구한 분할 지점을 여기서 실제 <a:br/>로 반영하기 위해 쓴다 (세로 방향으로
+    대신 배치 — 가로 넘침을 줄이는 대신 도형 높이를 더 쓰게 된다)."""
+    all_runs = list(sp_elem.iter(qn('a:r')))
+    if not all_runs or not lines:
+        return
+    t = all_runs[0].find(qn('a:t'))
+    if t is not None:
+        t.text = lines[0]
+    for run in all_runs[1:]:
+        t = run.find(qn('a:t'))
+        if t is not None:
+            t.text = ''
+    if len(lines) > 1:
+        _append_extra_lines(all_runs[0], lines[1:])
+
+
 def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex=False,
                        force_sz=None, force_bold=None, force_color=None):
     """일반(흰색 아님) 도형 번역 적용. 여러 run은 첫 run으로 합치고 나머지는 비운다.
