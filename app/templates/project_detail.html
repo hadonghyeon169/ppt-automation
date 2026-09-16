@@ -46,7 +46,7 @@
     <h1 style="margin-bottom:4px;">{{ project['name'] }}</h1>
     <div class="muted">{{ lang_meta.get('label', project['target_lang']) }} · 원본: {{ project['original_filename'] }}</div>
   </div>
-  <span class="stage-pill" id="stage-pill">{{ project['stage'] }}</span>
+  <span class="stage-pill {{ 'stalled' if stalled else '' }}" id="stage-pill">{{ project['stage'] }}{{ ' ⚠ 멈춤' if stalled else '' }}</span>
 </div>
 
 <div class="card" style="margin-top:16px;">
@@ -61,7 +61,13 @@
       </form>
 
     {% elif project['stage'] in ('translating',) %}
-      <div class="muted">번역 진행 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="inprogress-normal" class="muted" style="{{ 'display:none;' if stalled else '' }}">번역 진행 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="stalled-banner" class="flash error" style="{{ '' if stalled else 'display:none;' }}">
+        ⚠ 진행이 멈춘 것으로 보입니다 (마지막 업데이트로부터 <span id="stalled-secs">{{ (seconds_since_update or 0)|int }}</span>초 경과). 서버 재배포 등으로 백그라운드 작업이 중단됐을 수 있습니다. 아래 버튼으로 다시 시작하세요.
+      </div>
+      <form method="post" action="{{ url_for('projects.start_translation', project_id=project['id']) }}" id="stalled-retry" style="{{ '' if stalled else 'display:none;' }} margin-top:10px;">
+        <button class="btn" type="submit">번역 처음부터 다시 시작</button>
+      </form>
 
     {% elif project['stage'] == 'review_translation' %}
       <h2 style="margin-top:24px;">② 번역 검수 (AI 자동 비교 + 사람 확인)</h2>
@@ -102,7 +108,11 @@
       <a class="btn" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}">③ 음성 생성 설정 (타입캐스트)</a>
 
     {% elif project['stage'] == 'tts_running' %}
-      <div class="muted">음성 생성 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="inprogress-normal" class="muted" style="{{ 'display:none;' if stalled else '' }}">음성 생성 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="stalled-banner" class="flash error" style="{{ '' if stalled else 'display:none;' }}">
+        ⚠ 진행이 멈춘 것으로 보입니다 (마지막 업데이트로부터 <span id="stalled-secs">{{ (seconds_since_update or 0)|int }}</span>초 경과). 서버 재배포 등으로 백그라운드 작업이 중단됐을 수 있습니다. 아래 버튼으로 다시 시작하세요.
+      </div>
+      <a class="btn" href="{{ url_for('projects.tts_setup', project_id=project['id']) }}" id="stalled-retry" style="{{ '' if stalled else 'display:none;' }} margin-top:10px;">음성 생성 다시 설정하기</a>
 
     {% elif project['stage'] == 'tts_review' %}
       <h2 style="margin-top:24px;">음성 파일 검수</h2>
@@ -133,7 +143,13 @@
       </div>
 
     {% elif project['stage'] == 'final_running' %}
-      <div class="muted">최종 검수 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="inprogress-normal" class="muted" style="{{ 'display:none;' if stalled else '' }}">최종 검수 중입니다. 페이지가 자동으로 갱신됩니다...</div>
+      <div id="stalled-banner" class="flash error" style="{{ '' if stalled else 'display:none;' }}">
+        ⚠ 진행이 멈춘 것으로 보입니다 (마지막 업데이트로부터 <span id="stalled-secs">{{ (seconds_since_update or 0)|int }}</span>초 경과). 서버 재배포 등으로 백그라운드 작업이 중단됐을 수 있습니다. 아래 버튼으로 다시 시작하세요.
+      </div>
+      <form method="post" action="{{ url_for('projects.run_final_review', project_id=project['id']) }}" id="stalled-retry" style="{{ '' if stalled else 'display:none;' }} margin-top:10px;">
+        <button class="btn" type="submit">최종 검수 다시 실행</button>
+      </form>
 
     {% elif project['stage'] == 'review_final' %}
       <h2 style="margin-top:24px;">⑤ 최종 검수 결과 (PPT가 승인된 번역과 100% 일치하는지 자동 확인)</h2>
@@ -201,10 +217,29 @@
       const data = await res.json();
       document.getElementById('progress-bar').style.width = data.progress + '%';
       document.getElementById('status-message').textContent = data.status_message || '';
-      document.getElementById('stage-pill').textContent = data.stage;
+      const pill = document.getElementById('stage-pill');
+      pill.textContent = data.stage + (data.stalled ? ' ⚠ 멈춤' : '');
+      pill.classList.toggle('stalled', !!data.stalled);
       if (data.stage !== '{{ project['stage'] }}') {
         window.location.reload();
         return;
+      }
+      // 서버 재배포 등으로 백그라운드 작업이 중간에 죽어도 stage는 그대로 남기 때문에,
+      // 위 stage 비교만으로는 "멈춤"을 알 수 없다 — status.json의 stalled 플래그로
+      // 페이지를 새로고침하지 않고도 멈춤 배너/재시도 버튼을 즉시 보여준다.
+      const normal = document.getElementById('inprogress-normal');
+      const banner = document.getElementById('stalled-banner');
+      const retry = document.getElementById('stalled-retry');
+      const secsEl = document.getElementById('stalled-secs');
+      if (data.stalled) {
+        if (normal) normal.style.display = 'none';
+        if (banner) banner.style.display = '';
+        if (retry) retry.style.display = '';
+        if (secsEl && data.seconds_since_update != null) secsEl.textContent = data.seconds_since_update;
+      } else {
+        if (normal) normal.style.display = '';
+        if (banner) banner.style.display = 'none';
+        if (retry) retry.style.display = 'none';
       }
     } catch (e) { /* ignore */ }
     setTimeout(poll, 2500);
