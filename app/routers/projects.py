@@ -27,6 +27,8 @@ def _allowed(filename):
 def dashboard():
     db_path = current_app.config["DB_PATH"]
     projects = repo.list_projects(db_path)
+    for p in projects:
+        p["stalled"] = repo.is_stalled(p)
     return render_template("dashboard.html", projects=projects, languages=current_app.config["LANGUAGES"])
 
 
@@ -90,11 +92,14 @@ def detail(project_id):
         failed_batches_count = len(json.loads(project.get("failed_batches_json") or "[]"))
     except (TypeError, ValueError):
         failed_batches_count = 0
+    stalled = repo.is_stalled(project)
+    seconds_since_update = repo.seconds_since_update(project)
     return render_template(
         "project_detail.html", project=project, flags=flags, events=events,
         audio_assets=audio_assets, slide_texts=slide_texts, lang_meta=lang_meta,
         preview_translated=preview_translated, preview_final=preview_final,
         failed_batches_count=failed_batches_count,
+        stalled=stalled, seconds_since_update=seconds_since_update,
     )
 
 
@@ -106,11 +111,14 @@ def status_json(project_id):
     if not project:
         abort(404)
     flags = repo.list_review_flags(db_path, project_id)
+    secs = repo.seconds_since_update(project)
     return jsonify({
         "stage": project["stage"], "progress": project["progress"],
         "status_message": project["status_message"],
         "error_flags": sum(1 for f in flags if f["severity"] == "error" and not f["resolved"]),
         "warning_flags": sum(1 for f in flags if f["severity"] == "warning" and not f["resolved"]),
+        "stalled": repo.is_stalled(project),
+        "seconds_since_update": int(secs) if secs is not None else None,
     })
 
 
