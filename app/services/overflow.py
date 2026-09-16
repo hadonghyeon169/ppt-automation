@@ -7,6 +7,7 @@ DejaVu Sans로 근사 폭을 구해 "넘치는지 여부"와 "몇 배 넘치는�
 또는 wrap="square"로 전환할지를 정하기 위한 근사치다.
 """
 import os
+import re
 from PIL import ImageFont
 
 EMU_PER_INCH = 914400
@@ -144,6 +145,55 @@ def fit_font_size_to_width(text, requested_font_size_pt, max_cx_emu, min_font_si
             return size, False
         size -= 1
     return min_font_size_pt, True
+
+
+def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
+    """한 줄로 돼 있는 텍스트가 max_cx_emu 폭을 넘칠 때, 박스 크기를 바꾸지 않고
+    max_lines줄 이내로 줄바꿈해서 각 줄이 폭 안에 들어가도록 분할을 시도한다.
+
+    그룹으로 묶인 wrap="none" 도형(예: 말풍선, 문법 템플릿 "예문" 박스)은 박스를
+    가로로 넓히면 그룹 전체 좌표가 틀어지므로 자동 확장을 하지 않는데, 그러면 폰트를
+    최소치까지 줄여도 넘치는 긴 번역문은 그동안 아무 보정 없이 옆으로 삐져나갔다.
+    분할 지점은 쉼표(문장이 자연스럽게 끊기는 지점)를 우선하고, 쉼표가 없거나
+    분할 후에도 안 맞으면 공백(단어 경계)에서 전체 폭이 최대한 고르게 나뉘도록
+    고른다. 어떻게 나눠도 어느 한 줄이 폭을 넘으면(예: 쉼표/공백이 아예 없는
+    긴 단어 하나) None을 반환해 호출자가 기존처럼 "수동 확인" 경고로 폴백하게 한다.
+
+    반환: 줄 리스트(성공, 원래 한 줄로 충분하면 길이 1) 또는 None(분할해도 안 맞음)."""
+    if not text:
+        return None
+    if estimate_text_width_emu(text, font_size_pt) <= max_cx_emu:
+        return [text]
+    if max_lines < 2:
+        return None
+
+    def _best_split(points):
+        candidates = list(points)
+        if not candidates:
+            return None
+        total_w = estimate_text_width_emu(text, font_size_pt)
+        target = total_w / max_lines
+        best_idx = min(
+            candidates,
+            key=lambda i: abs(estimate_text_width_emu(text[:i], font_size_pt) - target),
+        )
+        first, rest = text[:best_idx].strip(), text[best_idx:].strip()
+        if not first or not rest:
+            return None
+        rest_lines = split_text_for_width(rest, font_size_pt, max_cx_emu, max_lines - 1)
+        if rest_lines is None:
+            return None
+        lines = [first] + rest_lines
+        if all(estimate_text_width_emu(line, font_size_pt) <= max_cx_emu for line in lines):
+            return lines
+        return None
+
+    comma_points = (m.end() for m in re.finditer(r'[,，、]\s*', text))
+    result = _best_split(comma_points)
+    if result:
+        return result
+    space_points = (m.start() for m in re.finditer(r'\s+', text))
+    return _best_split(space_points)
 
 
 def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu, max_width_ratio=0.92):
