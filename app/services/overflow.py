@@ -28,9 +28,21 @@ def _find_fallback_font():
 
 _FALLBACK_FONT_PATH = _find_fallback_font()
 
+# 실제 배포/렌더링에 쓰이는 폰트(러시아어=Noto Sans, 태국어=Noto Sans TI 등,
+# config.py LANGUAGES 참고)는 여기서 측정에 쓰는 DejaVu Sans와 다른 글꼴이다.
+# 두 폰트의 글자별 실제 폭(특히 키릴 문자)은 정확히 같지 않으므로, 근사치에는
+# 항상 어느 정도 오차가 있다 — "구조" 설명 박스처럼 여백이 빠듯한 도형에서
+# 이 오차가 실제 넘침으로 이어진 사례가 있었다(38번 슬라이드). 오차의 정확한
+# 방향/크기를 폰트별로 다 측정해서 보정하는 대신, 넘침 쪽(과소평가)보다
+# 안전한 쪽(과대평가로 폰트를 약간 더 줄이는 것)으로 치우치도록 작은 안전
+# 여유율을 곱한다 — 완벽한 폭 계산이 아니라 "넘칠 가능성"을 줄이는 목적.
+FONT_METRIC_SAFETY_MARGIN = 1.08
+
 
 def estimate_text_width_emu(text, font_size_pt):
-    """DejaVu Sans 근사치로 텍스트 폭을 EMU 단위로 추정."""
+    """DejaVu Sans 근사치로 텍스트 폭을 EMU 단위로 추정.
+    실제 렌더링 폰트와의 차이를 보정하기 위해 FONT_METRIC_SAFETY_MARGIN만큼
+    여유를 더한 값을 반환한다(과소평가로 인한 넘침 방지 우선)."""
     if not text:
         return 0
     if _FALLBACK_FONT_PATH:
@@ -40,12 +52,12 @@ def estimate_text_width_emu(text, font_size_pt):
             bbox = font.getbbox(text)
             width_px = bbox[2] - bbox[0]
             width_pt = width_px * 72.0 / 96.0
-            return int(width_pt * EMU_PER_PT)
+            return int(width_pt * EMU_PER_PT * FONT_METRIC_SAFETY_MARGIN)
         except Exception:
             pass
     # 폴백: 평균 문자폭을 font_size의 0.55배로 근사
     avg_char_width_pt = font_size_pt * 0.55
-    return int(len(text) * avg_char_width_pt * EMU_PER_PT)
+    return int(len(text) * avg_char_width_pt * EMU_PER_PT * FONT_METRIC_SAFETY_MARGIN)
 
 
 def compute_overflow_ratio(text, font_size_pt, shape_cx_emu, insets_emu=0):
