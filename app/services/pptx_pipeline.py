@@ -6,6 +6,7 @@
 """
 import logging
 import os
+import re
 import unicodedata
 from pptx import Presentation
 
@@ -27,6 +28,49 @@ ADJACENCY_GAP_EMU_RATIO = 0.06  # 슬라이드 폭 대비, 이 이내로 다른 
 # "받침" 규칙처럼 프롬프트 지시만으로는 배치 간 일관성을 보장할 수 없으므로, 여기서
 # 코드 레벨로 강제 적용한다 (AI가 어떤 판단을 내렸든 무시하고 항상 원문 유지).
 POS_ABBREVIATION_LABELS = {"동", "명", "형", "부", "관", "감", "조"}
+
+# "정의"/"구조"/"예문" 아이콘 옆에 붙는 "번역" 도형은 "【Определение】"처럼 공백
+# 없는 대괄호+단어 형태를 쓰는데, 이 도형의 원본 박스 폭이 실측 렌더링 기준으로
+# 너무 좁아서(실사용자 파일 확인: "정의" 라벨 — 폭 1.9in에 14pt "【Определение】") 폰트
+# 축소 계산상으로는 "1줄에 들어간다"고 나와도 실제 LibreOffice/PowerPoint 렌더링에서는
+# 대괄호(【】)를 CJK 구두점으로 취급해 단어 중간에 줄바꿈이 들어가 "정의 【Определение /
+# 】"처럼 닫는 대괄호만 다음 줄에 혼자 남는 모양이 됐다(사용자 피드백: "정의 나오는
+# 부분... 한국어랑 간격 맞춰" — 실제로는 "구조"/"예문"은 멀쩡한데 "정의"만 유독 심하게
+# 잘려 보였음. 우리 폭 추정치(DejaVu Sans 근사)가 실제 폰트보다 좁게 잡는 오차 때문에
+# 여유가 거의 없었던 것으로 보임). 폰트를 억지로 줄이는 대신, 이런 대괄호 라벨 도형은
+# 필요 추정 폭보다 넉넉히(안전 배수) 박스를 넓혀 애초에 줄바꿈이 일어나지 않게 한다.
+BRACKET_LABEL_RE = re.compile(r"^【.+】$")
+BRACKET_LABEL_WIDTH_SAFETY_FACTOR = 1.4
+
+# 문법 패턴을 큰 글씨(150pt 안팎)로 보여주는 "표지/구분" 슬라이드("동 + -은 적이
+# 있다"류)는 "정의/구조/예문" 상세 카드(AUDIO_REQUIRED_MARKERS로 식별)의 축약
+# 미리보기라, 상세 카드 쪽 설명 문장만 번역하고 표지 쪽 설명 문장은 한국어
+# 그대로 두는 것이 사용자가 원하는 동작이다(사용자 확인: 초급2 12강 기준
+# 12/37번 슬라이드류 — 이런 표지 슬라이드는 매 과(課)마다 반복되므로 슬라이드
+# 번호가 아니라 구조로 판별한다).
+DIVIDER_TITLE_FONT_THRESHOLD_PT = 100
+
+
+def _is_divider_slide(extracted_slide):
+    """상세 카드가 아니면서(정의/구조/예문 마커가 전혀 없으면서) 매우 큰
+    폰트(100pt 이상)의 한국어/중국어 도형이 있으면 "표지" 슬라이드로 본다."""
+    combined_text = "".join(s["full_text"] for s in extracted_slide["shapes"])
+    if all(marker in combined_text for marker in AUDIO_REQUIRED_MARKERS):
+        return False
+    return any(
+        (s.get("has_korean") or s.get("has_chinese"))
+        and any(sz >= DIVIDER_TITLE_FONT_THRESHOLD_PT for sz in (s.get("font_sizes_pt") or []))
+        for s in extracted_slide["shapes"]
+    )
+
+
+# 캐릭터 말풍선 캡션("번역" 도형, bubble_caption_slide에서 쉼표 기준 2줄 강제
+# 줄바꿈 대상) 전용 폰트 피팅 상한/하한. 원본 도형 높이가 아주 작게(0.6in 안팎)
+# 잡혀있는 템플릿이 있어, 그 안에 맞추려다 폰트가 필요 이상으로 작아지는
+# 문제가 있었다(사용자 피드백: "캐릭터 나오는 곳 글씨 더 키워"). 예문 재배치와
+# 같은 발상으로, 필요하면 도형을 세로로 더 키우는 쪽을 우선한다.
+BUBBLE_CAPTION_HEIGHT_CEILING_EMU = int(1.3 * ov.EMU_PER_INCH)
+BUBBLE_CAPTION_MIN_FONT_PT = 20
 
 
 def _boxes_horizontally_adjacent(a, b, slide_width_emu):
@@ -162,6 +206,19 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
         # 앞 항목이 짧으면(거의 항상 그렇다) 남는 공간이 뒤 항목에 자연스럽게
         # 재분배되고, 앞 항목이 길 때만 실제로 필요한 만큼만 뒤 항목을 민다.
         GENEROUS_FIT_CEILING_EMU = int(1.1 * ov.EMU_PER_INCH)
+        # 마지막 항목은 다음 항목이 없어 초과분을 흡수할 데가 없다 — 컨테이너
+        # 바닥까지 남는 공간이 애초에 "한국어 한 줄 + 여백"보다 좁은 경우(3개짜리
+        # 예문 그룹이 컨테이너 높이를 거의 다 쓰는 템플릿에서 실제로 관찰됨)에는
+        # 여유 있는 상한을 그대로 쓰면 카드 밖으로 크게 넘친다. 한국어 줄과의
+        # 여백(desired_top)은 절대 줄이지 않는다 — 줄이면 번역이 위 한국어 줄에
+        # 더 가까워져 카드 밖으로 넘치는 것보다 더 나쁜 "글자가 겹쳐 보이는"
+        # 문제가 생긴다(실측 확인). 대신 폰트 상한만 실제 남은 공간만큼으로
+        # 낮춰(완전히 안 보일 정도로 줄이지는 않게 최소 상한을 둠) 넘치는 정도를
+        # 최대한 줄인다 — 그래도 못 줄이면 카드 경계를 살짝 넘는 채로 두고
+        # review_flag로 표시한다.
+        EXAMPLE_MIN_FONT_FLOOR_PT = 14  # 기존 기본값(10pt)은 "너무 작음" 버그의
+        # 원인이었으므로, 여백이 정말 부족한 항목이라도 읽을 수 있는 하한을 쓴다.
+        EXAMPLE_MIN_CEILING_EMU = int(0.3 * ov.EMU_PER_INCH)
         container_bottom = c_xfrm["y"] + c_xfrm["cy"]
         cumulative_bottom = None
 
@@ -171,6 +228,8 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
                 new_y = desired_top
             else:
                 new_y = max(desired_top, cumulative_bottom + EXAMPLE_TRANSLATION_GAP_EMU)
+
+            available_h = container_bottom - new_y
             pushed_down = new_y - desired_top
 
             new_x, new_cx = c_xfrm["x"], c_xfrm["cx"]
@@ -178,8 +237,13 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
                 t_meta["font_sizes_pt"][0] if t_meta.get("font_sizes_pt") else 20
             )
 
+            fit_ceiling_emu = GENEROUS_FIT_CEILING_EMU
+            if available_h < GENEROUS_FIT_CEILING_EMU:
+                fit_ceiling_emu = max(available_h, EXAMPLE_MIN_CEILING_EMU)
+
             fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
-                final_text, requested_pt, new_cx, GENEROUS_FIT_CEILING_EMU,
+                final_text, requested_pt, new_cx, fit_ceiling_emu,
+                min_font_size_pt=EXAMPLE_MIN_FONT_FLOOR_PT,
                 insets_lr_emu=t_meta.get("insets_lr_emu"),
                 insets_tb_emu=t_meta.get("insets_tb_emu"),
             )
@@ -241,6 +305,9 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
         bubble_caption_slide = any(
             (s["shape_name"] or "").startswith("말풍선") for s in extracted_slide["shapes"]
         )
+        # 문법 패턴을 큰 글씨로 보여주는 "표지/구분" 슬라이드 여부 — 이런 슬라이드의
+        # 설명 문장은 번역하지 않고 한국어 그대로 둔다(위 _is_divider_slide 참고).
+        divider_slide = _is_divider_slide(extracted_slide)
 
         # 이번 슬라이드에서 실제로 번역이 적용된 도형들 (넘침 보정 대상)
         translated_sp_on_slide = []
@@ -264,6 +331,16 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     "slide_index": slide_idx, "shape_name": meta["shape_name"],
                     "source_text": meta["full_text"], "translated_text": meta["full_text"],
                     "issue": "품사 줄임말 라벨(동/명/형/부 등)은 규칙에 따라 번역하지 않고 원문을 그대로 유지했습니다.",
+                    "severity": "info",
+                })
+                continue
+            if divider_slide and (meta.get("has_korean") or meta.get("has_chinese")):
+                # 표지(구분) 슬라이드의 설명 문장 — AI의 판단과 무관하게 번역하지 않고
+                # 한국어 원문을 그대로 유지한다(사용자 확인 사항).
+                review_flags.append({
+                    "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                    "source_text": meta["full_text"], "translated_text": meta["full_text"],
+                    "issue": "표지(구분) 슬라이드로 판단되어 번역하지 않고 원문을 그대로 유지했습니다.",
                     "severity": "info",
                 })
                 continue
@@ -344,16 +421,48 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                         "severity": "info",
                     })
 
+            is_bubble_caption_box = (
+                bubble_caption_slide and meta["shape_name"] == "번역" and meta["wrap"] == "square"
+            )
+            is_bracket_label_box = (
+                meta["shape_name"] == "번역"
+                and meta["wrap"] == "square"
+                and bool(BRACKET_LABEL_RE.match((translated_text or "").strip()))
+            )
+
             fit_note = None
+            bracket_label_new_cx = None
             if meta["xfrm_emu"] and meta["wrap"] != "none":
                 text_for_fit = (
                     translated_paragraphs
                     if (meta["paragraph_count"] > 1 and translated_paragraphs)
                     else translated_text
                 )
+                fit_box_cx = meta["xfrm_emu"]["cx"]
+                fit_box_cy = meta["xfrm_emu"]["cy"]
+                fit_min_pt = 10
+                if is_bubble_caption_box:
+                    # 원본 도형 높이가 아주 작게(0.6in 안팎) 잡혀있어 그 안에 맞추려다
+                    # 폰트가 필요 이상으로 작아지는 문제가 있었다(사용자 피드백: "캐릭터
+                    # 나오는 곳 글씨 더 키워"). 여유 있는 상한을 대신 쓰고 최소 폰트도
+                    # 더 높게 잡는다 — 실제로 늘어난 높이만큼은 아래에서 도형 자체를
+                    # 세로로 넓혀준다.
+                    fit_box_cy = max(fit_box_cy, BUBBLE_CAPTION_HEIGHT_CEILING_EMU)
+                    fit_min_pt = BUBBLE_CAPTION_MIN_FONT_PT
+                if is_bracket_label_box:
+                    # "【단어】" 라벨 도형 — 우리 폭 추정치와 실제 렌더링 폭 오차 때문에
+                    # 원본 박스 폭 그대로면 "1줄에 들어간다"고 계산해도 실제로는 대괄호
+                    # 경계에서 줄바꿈이 일어난다(위 BRACKET_LABEL_* 주석 참고). 안전
+                    # 배수를 곱한 폭을 상한으로 써서 폰트를 줄이지 않고 박스만 넓힌다.
+                    est_w = ov.estimate_text_width_emu(translated_text, requested_pt)
+                    safe_w = int(est_w * BRACKET_LABEL_WIDTH_SAFETY_FACTOR) + (meta.get("insets_lr_emu") or 0)
+                    if safe_w > fit_box_cx:
+                        fit_box_cx = safe_w
+                        bracket_label_new_cx = safe_w
                 fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
                     text_for_fit, requested_pt,
-                    meta["xfrm_emu"]["cx"], meta["xfrm_emu"]["cy"],
+                    fit_box_cx, fit_box_cy,
+                    min_font_size_pt=fit_min_pt,
                     insets_lr_emu=meta.get("insets_lr_emu"),
                     insets_tb_emu=meta.get("insets_tb_emu"),
                 )
@@ -413,6 +522,37 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     "issue": f"XML 적용 중 오류: {e}", "severity": "error",
                 })
                 continue
+
+            if bracket_label_new_cx and meta["xfrm_emu"]:
+                # 폭만 넓힌다 — 위치(x)는 그대로 둬서 라벨이 원래 있던 자리(아이콘/
+                # 배지 바로 옆)에서 오른쪽으로만 넉넉해지게 한다.
+                try:
+                    ops.set_shape_xfrm(sp, cx=int(bracket_label_new_cx))
+                except Exception:
+                    pass
+
+            if is_bubble_caption_box and meta["xfrm_emu"]:
+                # 방금 적용한 실제 폰트 크기 기준으로 필요한 높이를 계산해, 원본
+                # 도형보다 크면(폰트를 키워서 안 들어가는 경우) 세로로만 키운다
+                # (좌표/가로 폭은 그대로 유지 — 캡션 도형은 대개 주변에 여유가 있다).
+                final_pt = force_sz_pt or requested_pt
+                usable_cx_h = (
+                    meta["xfrm_emu"]["cx"] - meta["insets_lr_emu"]
+                    if meta.get("insets_lr_emu") is not None
+                    else int(meta["xfrm_emu"]["cx"] * ov.USABLE_WIDTH_RATIO)
+                )
+                text_for_height = text_for_fit if isinstance(text_for_fit, str) else "\n".join(text_for_fit)
+                lines_h = ov.estimate_line_count(
+                    text_for_height, final_pt, meta["xfrm_emu"]["cx"], usable_cx_emu=max(usable_cx_h, 1)
+                )
+                insets_tb = meta.get("insets_tb_emu") or 0
+                needed_h = int(lines_h * final_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT + insets_tb)
+                if needed_h > meta["xfrm_emu"]["cy"]:
+                    try:
+                        ops.set_body_pr_wrap_square_autofit(sp)
+                        ops.set_shape_xfrm(sp, cy=needed_h)
+                    except Exception:
+                        pass
 
             applied_records.append({
                 "slide_index": slide_idx,
