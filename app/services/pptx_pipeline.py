@@ -355,18 +355,25 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
             if available_h < GENEROUS_FIT_CEILING_EMU:
                 fit_ceiling_emu = max(available_h, EXAMPLE_MIN_CEILING_EMU)
 
+            # bold는 예문 번역에서 항상 꺼져 있어야 하지만(위 example_translation_shape_ids
+            # 주석 참고) spc는 템플릿에 남아있을 수 있으므로 그대로 반영한다.
+            ex_bold_hint, ex_spc_pt_hint = ops.get_first_run_style_hints(sp)
             fitted_pt, overflow_unresolved = ov.fit_font_size_to_box(
                 final_text, requested_pt, new_cx, fit_ceiling_emu,
                 min_font_size_pt=EXAMPLE_MIN_FONT_FLOOR_PT,
                 insets_lr_emu=t_meta.get("insets_lr_emu"),
                 insets_tb_emu=t_meta.get("insets_tb_emu"),
+                bold=ex_bold_hint, spc_pt=ex_spc_pt_hint,
             )
             usable_cx = (
                 new_cx - t_meta["insets_lr_emu"]
                 if t_meta.get("insets_lr_emu") is not None
                 else int(new_cx * ov.USABLE_WIDTH_RATIO)
             )
-            lines = ov.estimate_line_count(final_text, fitted_pt, new_cx, usable_cx_emu=max(usable_cx, 1))
+            lines = ov.estimate_line_count(
+                final_text, fitted_pt, new_cx, usable_cx_emu=max(usable_cx, 1),
+                bold=ex_bold_hint, spc_pt=ex_spc_pt_hint,
+            )
             needed_h = lines * fitted_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT
 
             try:
@@ -541,6 +548,17 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             # 번역문은 폰트 축소 없이는 여전히 슬라이드 밖으로 삐져나갈 수 있었다.
             requested_pt = force_sz_pt or (meta["font_sizes_pt"][0] if meta["font_sizes_pt"] else 18)
 
+            # 폭 추정(overflow.py) 보정용 서식 힌트 — 굵기(bold)와 글자 간격(spc).
+            # apply_shape_level 등은 텍스트만 바꾸고 rPr의 b/spc는 그대로 유지하므로
+            # 번역 적용 전인 지금 읽어도(또는 적용 후에 읽어도) 같은 값이 나온다.
+            # 실사용자 파일로 확인된 두 회귀([38번 슬라이드] bold 무시로 넘침을
+            # 못 잡음, [2번 슬라이드] spc=-300 무시로 안 넘치는데 억지로 줄바꿈)의
+            # 근본 원인이 이 두 속성을 추정에 전혀 반영하지 않은 것이었다 — 아래
+            # 폭 관련 estimate_line_count/fit_font_size_to_*/compute_overflow_ratio/
+            # split_text_for_width/suggest_independent_shape_resize 호출에 전부
+            # 일관되게 전달한다.
+            style_bold_hint, style_spc_pt_hint = ops.get_first_run_style_hints(sp)
+
             # ── 말풍선 캡션 도형 전용: 쉼표 기준 강제 줄바꿈 ──────────────────
             # 사용자 확인 사항: 4번/26번 같은 캐릭터+말풍선 슬라이드는 번역하면
             # 문장이 거의 항상 길어지는데, 쉼표가 있으면 한 줄에 다 들어가는
@@ -577,7 +595,10 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                         box_cx - insets_lr if insets_lr is not None else int(box_cx * ov.USABLE_WIDTH_RATIO),
                         1,
                     )
-                comma_lines = ov.split_at_best_comma(translated_text, requested_pt, usable_cx_for_split)
+                comma_lines = ov.split_at_best_comma(
+                    translated_text, requested_pt, usable_cx_for_split,
+                    bold=style_bold_hint, spc_pt=style_spc_pt_hint,
+                )
                 if comma_lines:
                     translated_text = "\n".join(comma_lines)
                     review_flags.append({
@@ -668,7 +689,9 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     # 원본 박스 폭 그대로면 "1줄에 들어간다"고 계산해도 실제로는 대괄호
                     # 경계에서 줄바꿈이 일어난다(위 BRACKET_LABEL_* 주석 참고). 안전
                     # 배수를 곱한 폭을 상한으로 써서 폰트를 줄이지 않고 박스만 넓힌다.
-                    est_w = ov.estimate_text_width_emu(translated_text, requested_pt)
+                    est_w = ov.estimate_text_width_emu(
+                        translated_text, requested_pt, bold=style_bold_hint, spc_pt=style_spc_pt_hint
+                    )
                     safe_w = int(est_w * BRACKET_LABEL_WIDTH_SAFETY_FACTOR) + (meta.get("insets_lr_emu") or 0)
                     if safe_w > fit_box_cx:
                         fit_box_cx = safe_w
@@ -679,6 +702,7 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     min_font_size_pt=fit_min_pt,
                     insets_lr_emu=meta.get("insets_lr_emu"),
                     insets_tb_emu=meta.get("insets_tb_emu"),
+                    bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                 )
                 if fitted_pt < requested_pt:
                     if overflow_unresolved:
@@ -693,6 +717,7 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 max_cx = int(slide_width * 0.92)
                 fitted_pt, overflow_unresolved = ov.fit_font_size_to_width(
                     translated_text, requested_pt, max_cx,
+                    bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                 )
                 if fitted_pt < requested_pt:
                     if overflow_unresolved:
@@ -768,7 +793,8 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 )
                 text_for_height = text_for_fit if isinstance(text_for_fit, str) else "\n".join(text_for_fit)
                 lines_h = ov.estimate_line_count(
-                    text_for_height, final_pt, new_cx, usable_cx_emu=max(usable_cx_h, 1)
+                    text_for_height, final_pt, new_cx, usable_cx_emu=max(usable_cx_h, 1),
+                    bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                 )
                 insets_tb = meta.get("insets_tb_emu") or 0
                 needed_h = int(lines_h * final_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT + insets_tb)
@@ -821,28 +847,33 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     (xfrm["cx"] - insets_lr) if insets_lr is not None else int(xfrm["cx"] * ov.USABLE_WIDTH_RATIO),
                     1,
                 )
-                # 실사용자 파일(38번 슬라이드 "구조" 마지막 항목)로 직접 재현 확인한
-                # 문제: FONT_METRIC_SAFETY_MARGIN(1.08)을 적용해도 이 문구는 추정 폭이
-                # 실사용 가능 폭의 99.2%로 나와("한 줄로 들어간다"는 판정) 줄바꿈이
-                # 전혀 걸리지 않았는데, 실제 PowerPoint 렌더링(Noto Sans)에서는 박스
-                # 경계에 거의 닿거나 살짝 넘쳤다. 전역 안전 여유율을 더 올리면 다른
-                # 여러 도형에 영향을 주므로, 여기(이 박스 유형에만) 국소적으로 조금 더
-                # 보수적인 폭을 써서 이런 아슬아슬한 경우를 안전한 쪽(줄바꿈)으로
-                # 판정한다. 처음엔 "줄바꿈이 필요한지" 판단에만 이 좁힌 폭을 쓰고 실제
-                # 분할(split_text_for_width)은 원래 usable_cx로 했더니, 판단은
-                # "2줄 필요"로 나오는데 분할 함수는 같은(안 좁혀진) 폭 기준으로 "한
-                # 줄에 다 들어간다"고 판단해 분할 지점을 못 찾는 모순이 실제로 발생했다
-                # (len(split_lines)==1 → "자동 줄바꿈 지점을 찾지 못했습니다" 경고만
-                # 뜨고 실제로는 줄바꿈이 안 됨). 판단과 분할에 반드시 같은(좁힌) 폭을
-                # 써야 한다.
-                WRAP_DECISION_SAFETY_RATIO = 0.97
-                wrap_check_cx = max(int(usable_cx * WRAP_DECISION_SAFETY_RATIO), 1)
+                # 실사용자 파일(38번 슬라이드 "구조" 마지막 항목, bold 도형)로 재현
+                # 확인했던 문제: FONT_METRIC_SAFETY_MARGIN(1.08)을 적용해도 이 문구는
+                # 추정 폭이 실사용 가능 폭의 99.2%로 나와("한 줄로 들어간다"는 판정)
+                # 줄바꿈이 걸리지 않았는데, 실제 PowerPoint 렌더링(Noto Sans, bold)은
+                # 박스 경계를 살짝 넘었다. 이전 버전은 이 판단에만 폭을 3% 더 좁히는
+                # WRAP_DECISION_SAFETY_RATIO로 땜질했는데, 이 안전 여유율이 "번역"+
+                # wrap="square" 도형 전체에 무차별 적용되면서, 폰트를 박스에 거의
+                # 꽉 채우도록 자동 조정하는 fit_font_size_to_box 특성상 원래 한 줄에
+                # 잘 들어가던 다른 도형들(예: 2번 표지 슬라이드 러시아어 서브타이틀,
+                # spc=-300으로 글자 간격이 좁혀진 93pt 텍스트)까지 "2줄 필요"로
+                # 오판해 불필요하게 줄바꿈되는 회귀를 낳았다(실사용자 파일로 확인).
+                # 근본 원인은 폭 추정 자체가 굵기(bold)와 글자 간격(spc)을 전혀
+                # 반영하지 않은 것이었다 — 위에서 읽은 style_bold_hint/
+                # style_spc_pt_hint를 추정에 그대로 반영하면 38번 케이스(bold 무시 시
+                # 과소평가)와 2번 케이스(spc 무시 시 과대평가) 둘 다 정확한 방향으로
+                # 바로잡히므로, 임의의 추가 안전 여유율 없이 usable_cx를 그대로 쓴다.
+                # (판단과 분할은 반드시 같은 폭을 써야 한다 — 예전에 판단은 좁힌 폭,
+                # 분할은 원래 폭을 써서 "2줄 필요"라고 판단하고도 분할 함수는 "1줄에
+                # 다 들어간다"며 분할 지점을 못 찾는 모순이 있었던 버그의 재발 방지.)
                 lines_needed = ov.estimate_line_count(
-                    translated_text, final_pt, xfrm["cx"], usable_cx_emu=wrap_check_cx
+                    translated_text, final_pt, xfrm["cx"], usable_cx_emu=usable_cx,
+                    bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                 )
                 if lines_needed > 1:
                     split_lines = ov.split_text_for_width(
-                        translated_text, final_pt, wrap_check_cx, max_lines=lines_needed
+                        translated_text, final_pt, usable_cx, max_lines=lines_needed,
+                        bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                     )
                     if split_lines and len(split_lines) > 1:
                         try:
@@ -973,7 +1004,16 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             # "예문" 번역 도형들이 좌우 여백 각 0.15in인데 이를 무시하면 ratio
             # 0.98~0.99로 계산되어 통과했지만, 실사용 폭 기준으로는 1.05~1.06으로 넘침).
             insets_emu = meta.get("insets_lr_emu", 0) or 0
-            ratio = ov.compute_overflow_ratio(final_text, font_size, xfrm["cx"], insets_emu)
+            # bold/spc 힌트 — 위 사전 검증 루프와 동일한 이유(get_first_run_style_hints
+            # 주석 참고)로 폭 추정에 반영한다. 이 넘침 판정(ratio<=1.05)이 바로 38번
+            # 슬라이드 "구조" 마지막 항목(bold, wrap="none")이 실제로 걸려야 하는
+            # 지점이었다 — bold 미반영 시 ratio 0.99로 "안 넘침" 오판, 반영하면 1.07로
+            # 정확히 "넘침"으로 잡혀 아래에서 박스를 넓힌다.
+            style_bold_hint, style_spc_pt_hint = ops.get_first_run_style_hints(sp)
+            ratio = ov.compute_overflow_ratio(
+                final_text, font_size, xfrm["cx"], insets_emu,
+                bold=style_bold_hint, spc_pt=style_spc_pt_hint,
+            )
             if ratio <= 1.05:
                 continue  # 넘치지 않음
 
@@ -993,7 +1033,10 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     # 도형 높이(cy)까지 늘어난 줄 수가 실제로 들어가는지는 이 시점에
                     # 확인할 수 없으므로 여전히 warning으로 남겨 사람이 확인하게 한다.
                     usable_cx = max(xfrm["cx"] - insets_emu, 1)
-                    split_lines = ov.split_text_for_width(final_text, font_size, usable_cx, max_lines=2)
+                    split_lines = ov.split_text_for_width(
+                        final_text, font_size, usable_cx, max_lines=2,
+                        bold=style_bold_hint, spc_pt=style_spc_pt_hint,
+                    )
                     if split_lines and len(split_lines) > 1:
                         ops.force_multiline(sp, split_lines)
                         review_flags.append({
@@ -1017,6 +1060,7 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     new_geo = ov.suggest_independent_shape_resize(
                         final_text, font_size, xfrm, meta["align"], slide_width,
                         insets_emu=insets_emu,
+                        bold=style_bold_hint, spc_pt=style_spc_pt_hint,
                     )
                     ops.set_shape_xfrm(sp, x=new_geo["x"], cx=new_geo["cx"])
             except Exception as e:
