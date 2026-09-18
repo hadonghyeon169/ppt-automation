@@ -69,18 +69,6 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
             keys["anthropic"], anthropic_model, extracted, lang_code, lang_meta,
             reference_extracted=reference_extracted, progress_cb=progress_cb,
         )
-        if plan_errors:
-            repo.add_review_flags(db_path, project_id, "translation", [
-                {"slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
-                 "issue": f"슬라이드 {e['slides']} 배치 번역 실패: {e['error']} "
-                          f"(검수 화면에서 '실패한 배치만 재시도'로 다시 시도할 수 있습니다)",
-                 "severity": "error"}
-                for e in plan_errors
-            ])
-
-        # plan_json은 여기서 바로 저장 — failed_batches_json은 apply 단계에서 나오는
-        # "번역 누락" 슬라이드까지 합쳐서 apply 이후에 저장한다 (아래).
-        repo.update_project(db_path, project_id, plan_json=json.dumps(plan_by_shape, ensure_ascii=False))
 
         repo.update_project(db_path, project_id, progress=75, status_message="PPT 파일에 번역 반영 중...")
         out_dir = os.path.join(pdir, "translated")
@@ -90,14 +78,71 @@ def run_translation_stage(db_path, projects_dir, project_id, languages, anthropi
         applied_records, apply_flags, untranslated_batches = pptx_pipeline.apply_translation_plan(
             project["original_path"], extracted, plan_by_shape, lang_code, lang_meta, out_path,
         )
-        repo.replace_slide_texts(db_path, project_id, applied_records)
-        repo.add_review_flags(db_path, project_id, "translation", apply_flags)
 
         # 실패한 배치(API 호출 자체가 에러)와 번역이 누락된 슬라이드(응답엔 있었지만
-        # 이 도형이 빠졌거나 결과가 비었던 경우)를 합쳐 "부분 재번역" 대상으로 저장한다.
+        # 이 도형이 빠졌거나 결과가 비었던 경우)를 자동으로 재시도한다.
+        # 이전에는 이 정보가 "검수 화면에서 수동으로 재시도" 버튼을 통해서만
+        # 복구됐는데, 실사용자 파일에서 이 버튼을 쓰지 않아 일부 슬라이드가 배치
+        # 실패/누락 상태 그대로 최종본에 남는 사고가 반복됐다(예: 3슬라이드짜리
+        # 배치 하나가 API 호출 자체에서 실패했거나, 모델이 응답에서 일부 도형만
+        # 빠뜨린 경우 — 같은 배치의 다른 슬라이드는 정상 번역됐는데 특정 슬라이드만
+        # 원문/이전 언어 텍스트 그대로 남아 "번역이 전혀 안 된 슬라이드"처럼 보였다).
+        # 같은 실행 안에서 최대 MAX_AUTO_RETRY_PASSES회까지 자동으로 재시도해
+        # 사람이 버튼을 누르지 않아도 웬만한 누락은 스스로 복구되게 한다.
+        MAX_AUTO_RETRY_PASSES = 2
         all_retry_batches = [e["slides"] for e in plan_errors] + untranslated_batches
+        retry_passes_done = 0
+        while all_retry_batches and retry_passes_done < MAX_AUTO_RETRY_PASSES:
+            retry_passes_done += 1
+            repo.update_project(
+                db_path, project_id,
+                status_message=f"번역 누락/실패 자동 재시도 중... ({retry_passes_done}/{MAX_AUTO_RETRY_PASSES}차, "
+                                f"{len(all_retry_batches)}개 배치)",
+            )
+            repo.add_event(
+                db_path, project_id,
+                f"번역 누락/실패 배치 {len(all_retry_batches)}개 감지 — 자동 재시도 {retry_passes_done}차 시작 "
+                f"(슬라이드: {sorted({i + 1 for b in all_retry_batches for i in b})})",
+            )
+            plan_updates, new_errors = translator.retry_failed_batches(
+                keys["anthropic"], anthropic_model, extracted, lang_code, lang_meta, all_retry_batches,
+                reference_extracted=reference_extracted,
+            )
+            plan_by_shape.update(plan_updates)
+            applied_records, apply_flags, untranslated_batches = pptx_pipeline.apply_translation_plan(
+                project["original_path"], extracted, plan_by_shape, lang_code, lang_meta, out_path,
+            )
+            all_retry_batches = [e["slides"] for e in new_errors] + untranslated_batches
+
+        if retry_passes_done:
+            if all_retry_batches:
+                repo.add_event(
+                    db_path, project_id,
+                    f"자동 재시도 {retry_passes_done}회를 마쳤지만 여전히 번역되지 않은 배치가 "
+                    f"{len(all_retry_batches)}개 남아 있습니다 — 검수 화면에서 수동으로 다시 시도해주세요.",
+                    level="error",
+                )
+            else:
+                repo.add_event(
+                    db_path, project_id,
+                    f"자동 재시도 {retry_passes_done}회 만에 번역 누락/실패가 모두 복구됐습니다.",
+                )
+
+        repo.replace_slide_texts(db_path, project_id, applied_records)
+        repo.add_review_flags(db_path, project_id, "translation", apply_flags)
+        if all_retry_batches:
+            repo.add_review_flags(db_path, project_id, "translation", [{
+                "slide_index": None, "shape_name": None, "source_text": None, "translated_text": None,
+                "issue": f"자동 재시도 {retry_passes_done}회 후에도 번역이 반영되지 않은 슬라이드가 "
+                         f"있습니다: {sorted({i + 1 for b in all_retry_batches for i in b})}번 — 검수 화면의 "
+                         "'실패한 배치만 재시도'로 다시 시도해주세요.",
+                "severity": "error",
+            }])
+
+        # plan_json/failed_batches_json은 자동 재시도까지 반영한 최종 상태로 저장한다.
         repo.update_project(
             db_path, project_id,
+            plan_json=json.dumps(plan_by_shape, ensure_ascii=False),
             failed_batches_json=json.dumps(all_retry_batches, ensure_ascii=False),
         )
 
