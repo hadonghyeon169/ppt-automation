@@ -13,7 +13,7 @@ class LLMError(Exception):
     pass
 
 
-def call_claude(api_key, model, system_prompt, user_content, max_tokens=16000, temperature=None):
+def call_claude(api_key, model, system_prompt, user_content, max_tokens=24000, temperature=None):
     if not api_key:
         raise LLMError("Claude API 키가 설정되어 있지 않습니다. 설정 페이지에서 등록해주세요.")
     headers = {
