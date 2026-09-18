@@ -13,20 +13,33 @@ from PIL import ImageFont
 EMU_PER_INCH = 914400
 EMU_PER_PT = EMU_PER_INCH / 72.0
 
-_FONT_CANDIDATES = [
+_FONT_CANDIDATES_REGULAR = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+_FONT_CANDIDATES_BOLD = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
 
-def _find_fallback_font():
-    for p in _FONT_CANDIDATES:
+def _find_font(candidates):
+    for p in candidates:
         if os.path.exists(p):
             return p
     return None
 
 
-_FALLBACK_FONT_PATH = _find_fallback_font()
+# 실사용자 파일(38번 슬라이드 "구조" 마지막 항목, shape rPr b="1")로 직접 재현
+# 확인한 문제: 이전에는 bold 여부와 무관하게 항상 DejaVuSans(레귤러)로만 폭을
+# 측정했다 — 실제 도형은 굵게(bold) 렌더링되는데 레귤러 폭으로 추정하면 실제보다
+# 좁게 나와(이 사례에서 폭 비율 0.99 → "안 넘침"으로 오판) 넘침 보정이 걸리지
+# 않았다(ratio<=1.05 기준을 근소하게 통과). DejaVuSans-Bold로 재측정하면 같은
+# 텍스트가 비율 1.07로 나와 정확히 넘침으로 잡힌다. bold 플래그가 있는 도형은
+# 반드시 Bold 폰트 파일로 측정해야 한다.
+_FALLBACK_FONT_PATH_REGULAR = _find_font(_FONT_CANDIDATES_REGULAR)
+_FALLBACK_FONT_PATH_BOLD = _find_font(_FONT_CANDIDATES_BOLD) or _FALLBACK_FONT_PATH_REGULAR
+# 하위 호환: 이 모듈 밖에서 _FALLBACK_FONT_PATH를 직접 참조하는 코드가 있을 수
+# 있으므로 레귤러 경로를 그대로 유지한다.
+_FALLBACK_FONT_PATH = _FALLBACK_FONT_PATH_REGULAR
 
 # 실제 배포/렌더링에 쓰이는 폰트(러시아어=Noto Sans, 태국어=Noto Sans TI 등,
 # config.py LANGUAGES 참고)는 여기서 측정에 쓰는 DejaVu Sans와 다른 글꼴이다.
@@ -39,28 +52,43 @@ _FALLBACK_FONT_PATH = _find_fallback_font()
 FONT_METRIC_SAFETY_MARGIN = 1.08
 
 
-def estimate_text_width_emu(text, font_size_pt):
+def estimate_text_width_emu(text, font_size_pt, bold=False, spc_pt=0.0):
     """DejaVu Sans 근사치로 텍스트 폭을 EMU 단위로 추정.
     실제 렌더링 폰트와의 차이를 보정하기 위해 FONT_METRIC_SAFETY_MARGIN만큼
-    여유를 더한 값을 반환한다(과소평가로 인한 넘침 방지 우선)."""
+    여유를 더한 값을 반환한다(과소평가로 인한 넘침 방지 우선).
+
+    bold=True면 DejaVuSans-Bold로 측정한다 — 레귤러로 재면 실제보다 좁게 나와
+    넘침을 놓친다(실사용자 파일 38번 슬라이드 구조 박스에서 확인: bold 무시 시
+    비율 0.99로 "안 넘침" 오판, bold 반영하면 1.07로 정확히 "넘침").
+
+    spc_pt: 도형 rPr의 spc 속성(글자 사이 간격, 1/100pt 단위를 pt로 환산 — 예:
+    spc="-300"이면 -3.0)을 받는다. 이 추정은 글자 간격을 전혀 고려하지 않는데,
+    템플릿이 큰 제목/표지 텍스트에 음수 spc(글자 간격 좁힘)를 자주 걸어둬서
+    무시하면 실제보다 넓게 추정해 불필요한 줄바꿈을 유발한다(실사용자 파일 2번
+    표지 슬라이드에서 확인: spc=-300, 93pt 텍스트가 spc 미반영 시 비율 1.05로
+    "넘침" 오판, 반영하면 0.99로 정확히 "안 넘침"). (글자수-1)개 간격만큼만
+    더하거나 뺀다."""
     if not text:
         return 0
-    if _FALLBACK_FONT_PATH:
+    font_path = _FALLBACK_FONT_PATH_BOLD if bold else _FALLBACK_FONT_PATH_REGULAR
+    n_gaps = max(len(text) - 1, 0)
+    if font_path:
         try:
             px_size = max(int(font_size_pt * 4 / 3), 1)  # pt -> px 근사 (96dpi 가정)
-            font = ImageFont.truetype(_FALLBACK_FONT_PATH, px_size)
+            font = ImageFont.truetype(font_path, px_size)
             bbox = font.getbbox(text)
             width_px = bbox[2] - bbox[0]
-            width_pt = width_px * 72.0 / 96.0
+            width_pt = max(width_px * 72.0 / 96.0 + n_gaps * spc_pt, 0.0)
             return int(width_pt * EMU_PER_PT * FONT_METRIC_SAFETY_MARGIN)
         except Exception:
             pass
-    # 폴백: 평균 문자폭을 font_size의 0.55배로 근사
-    avg_char_width_pt = font_size_pt * 0.55
-    return int(len(text) * avg_char_width_pt * EMU_PER_PT * FONT_METRIC_SAFETY_MARGIN)
+    # 폴백: 평균 문자폭을 font_size의 0.55배로 근사 (굵게는 약간 더 넓게)
+    avg_char_width_pt = font_size_pt * (0.58 if bold else 0.55)
+    width_pt = max(len(text) * avg_char_width_pt + n_gaps * spc_pt, 0.0)
+    return int(width_pt * EMU_PER_PT * FONT_METRIC_SAFETY_MARGIN)
 
 
-def compute_overflow_ratio(text, font_size_pt, shape_cx_emu, insets_emu=0):
+def compute_overflow_ratio(text, font_size_pt, shape_cx_emu, insets_emu=0, bold=False, spc_pt=0.0):
     """도형 cx(외곽 폭) 전체가 아니라, 텍스트 상자 내부 여백(lIns+rIns=insets_emu)을
     뺀 실사용 가능 폭 기준으로 넘침 비율을 계산한다. insets_emu를 빼지 않으면
     실제로는 넘치는 텍스트(예: 좌우 여백이 각 0.15in인 도형)도 비율이 1.05 기준선
@@ -68,7 +96,7 @@ def compute_overflow_ratio(text, font_size_pt, shape_cx_emu, insets_emu=0):
     usable_cx = shape_cx_emu - insets_emu
     if not usable_cx or usable_cx <= 0:
         return 1.0
-    width = estimate_text_width_emu(text, font_size_pt)
+    width = estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt)
     return width / usable_cx
 
 
@@ -77,7 +105,7 @@ USABLE_WIDTH_RATIO = 0.94   # 도형 내부 여백(lIns/rIns) 근사 차감
 USABLE_HEIGHT_RATIO = 0.88  # 도형 내부 여백(tIns/bIns) + 줄바꿈 근사오차 대비 차감
 
 
-def estimate_line_count(text, font_size_pt, box_cx_emu, usable_cx_emu=None):
+def estimate_line_count(text, font_size_pt, box_cx_emu, usable_cx_emu=None, bold=False, spc_pt=0.0):
     """word-wrap 도형에서 텍스트가 실제로 몇 줄로 감길지 근사한다.
     명시적 개행(\\n)은 각각 최소 한 줄로 세고, 각 줄 안에서는 폭 기준으로 자동
     줄바꿈되는 횟수를 ceil(텍스트폭 / 도형폭)으로 근사한다.
@@ -91,12 +119,12 @@ def estimate_line_count(text, font_size_pt, box_cx_emu, usable_cx_emu=None):
         if not raw_line.strip():
             total_lines += 1
             continue
-        width = estimate_text_width_emu(raw_line, font_size_pt)
+        width = estimate_text_width_emu(raw_line, font_size_pt, bold=bold, spc_pt=spc_pt)
         total_lines += max(1, -(-width // usable_cx))  # ceil division
     return max(1, total_lines)
 
 
-def estimate_max_word_width_emu(text, font_size_pt):
+def estimate_max_word_width_emu(text, font_size_pt, bold=False, spc_pt=0.0):
     """텍스트 안에서 가장 긴 '단어'(공백 기준 토큰)의 폭을 추정한다.
     word-wrap은 단어 경계에서만 줄바꿈되므로, 특정 단어 하나의 폭이 박스 폭보다
     크면 줄 수를 아무리 잘 배분해도 그 단어가 있는 줄은 박스 옆으로 삐져나간다.
@@ -106,7 +134,7 @@ def estimate_max_word_width_emu(text, font_size_pt):
     max_width = 0
     for raw_line in (text or "").split("\n"):
         for word in raw_line.split():
-            w = estimate_text_width_emu(word, font_size_pt)
+            w = estimate_text_width_emu(word, font_size_pt, bold=bold, spc_pt=spc_pt)
             if w > max_width:
                 max_width = w
     return max_width
@@ -114,7 +142,7 @@ def estimate_max_word_width_emu(text, font_size_pt):
 
 def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_cy_emu,
                           min_font_size_pt=10, line_spacing=LINE_SPACING_FACTOR,
-                          insets_lr_emu=None, insets_tb_emu=None):
+                          insets_lr_emu=None, insets_tb_emu=None, bold=False, spc_pt=0.0):
     """word-wrap 도형(wrap != "none")용: 도형 실제 높이(cy)에 텍스트가 들어가고,
     동시에 가장 긴 단어 하나가 박스 폭을 벗어나지 않을 때까지 폰트 크기를 1pt씩
     낮춘다. AI가 제안한 force_font_size_pt는 이 PPT 템플릿의 실제 도형 크기를
@@ -157,16 +185,16 @@ def fit_font_size_to_box(text_or_lines, requested_font_size_pt, box_cx_emu, box_
         usable_cx = max(int(box_cx_emu * USABLE_WIDTH_RATIO), 1)
     size = requested_font_size_pt
     while size >= min_font_size_pt:
-        lines = estimate_line_count(full_text, size, box_cx_emu, usable_cx_emu=usable_cx)
+        lines = estimate_line_count(full_text, size, box_cx_emu, usable_cx_emu=usable_cx, bold=bold, spc_pt=spc_pt)
         est_height = lines * size * line_spacing * EMU_PER_PT
-        word_width = estimate_max_word_width_emu(full_text, size)
+        word_width = estimate_max_word_width_emu(full_text, size, bold=bold, spc_pt=spc_pt)
         if est_height <= usable_cy and word_width <= usable_cx:
             return size, False
         size -= 1
     return min_font_size_pt, True
 
 
-def fit_font_size_to_width(text, requested_font_size_pt, max_cx_emu, min_font_size_pt=10):
+def fit_font_size_to_width(text, requested_font_size_pt, max_cx_emu, min_font_size_pt=10, bold=False, spc_pt=0.0):
     """wrap="none"(줄바꿈 없음, 한 줄) 도형용: 박스를 슬라이드 폭 한도(max_cx_emu)까지
     넓혀도 텍스트가 다 안 들어가면 폰트를 줄인다. suggest_independent_shape_resize는
     박스를 최대 max_width_ratio(기본 92%)까지만 넓히므로, 그래도 넘치는 긴 번역문은
@@ -175,14 +203,14 @@ def fit_font_size_to_width(text, requested_font_size_pt, max_cx_emu, min_font_si
         return requested_font_size_pt, False
     size = requested_font_size_pt
     while size >= min_font_size_pt:
-        width = estimate_text_width_emu(text, size)
+        width = estimate_text_width_emu(text, size, bold=bold, spc_pt=spc_pt)
         if width <= max_cx_emu:
             return size, False
         size -= 1
     return min_font_size_pt, True
 
 
-def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
+def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2, bold=False, spc_pt=0.0):
     """한 줄로 돼 있는 텍스트가 max_cx_emu 폭을 넘칠 때, 박스 크기를 바꾸지 않고
     max_lines줄 이내로 줄바꿈해서 각 줄이 폭 안에 들어가도록 분할을 시도한다.
 
@@ -197,7 +225,7 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
     반환: 줄 리스트(성공, 원래 한 줄로 충분하면 길이 1) 또는 None(분할해도 안 맞음)."""
     if not text:
         return None
-    if estimate_text_width_emu(text, font_size_pt) <= max_cx_emu:
+    if estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt) <= max_cx_emu:
         return [text]
     if max_lines < 2:
         return None
@@ -206,20 +234,20 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
         candidates = list(points)
         if not candidates:
             return None
-        total_w = estimate_text_width_emu(text, font_size_pt)
+        total_w = estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt)
         target = total_w / max_lines
         best_idx = min(
             candidates,
-            key=lambda i: abs(estimate_text_width_emu(text[:i], font_size_pt) - target),
+            key=lambda i: abs(estimate_text_width_emu(text[:i], font_size_pt, bold=bold, spc_pt=spc_pt) - target),
         )
         first, rest = text[:best_idx].strip(), text[best_idx:].strip()
         if not first or not rest:
             return None
-        rest_lines = split_text_for_width(rest, font_size_pt, max_cx_emu, max_lines - 1)
+        rest_lines = split_text_for_width(rest, font_size_pt, max_cx_emu, max_lines - 1, bold=bold, spc_pt=spc_pt)
         if rest_lines is None:
             return None
         lines = [first] + rest_lines
-        if all(estimate_text_width_emu(line, font_size_pt) <= max_cx_emu for line in lines):
+        if all(estimate_text_width_emu(line, font_size_pt, bold=bold, spc_pt=spc_pt) <= max_cx_emu for line in lines):
             return lines
         return None
 
@@ -231,7 +259,7 @@ def split_text_for_width(text, font_size_pt, max_cx_emu, max_lines=2):
     return _best_split(space_points)
 
 
-def split_at_best_comma(text, font_size_pt, usable_cx_emu=None):
+def split_at_best_comma(text, font_size_pt, usable_cx_emu=None, bold=False, spc_pt=0.0):
     """쉼표(,，、)가 있으면 그 지점에서 정확히 2줄로 나눈다.
 
     split_text_for_width와 달리 "박스 폭을 넘는지" 여부와 무관하게 쉼표가 있으면
@@ -259,21 +287,21 @@ def split_at_best_comma(text, font_size_pt, usable_cx_emu=None):
 
     def widths(i):
         return (
-            estimate_text_width_emu(text[:i], font_size_pt),
-            estimate_text_width_emu(text[i:], font_size_pt),
+            estimate_text_width_emu(text[:i], font_size_pt, bold=bold, spc_pt=spc_pt),
+            estimate_text_width_emu(text[i:], font_size_pt, bold=bold, spc_pt=spc_pt),
         )
 
     if usable_cx_emu:
         fitting = [i for i in comma_points if all(w <= usable_cx_emu for w in widths(i))]
         if fitting:
-            total_w = estimate_text_width_emu(text, font_size_pt)
+            total_w = estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt)
             target = total_w / 2
             best_idx = min(fitting, key=lambda i: abs(widths(i)[0] - target))
         else:
             # 어느 지점을 골라도 한쪽은 박스보다 넓다 — 더 넓은 쪽을 최소화한다.
             best_idx = min(comma_points, key=lambda i: max(widths(i)))
     else:
-        total_w = estimate_text_width_emu(text, font_size_pt)
+        total_w = estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt)
         target = total_w / 2
         best_idx = min(comma_points, key=lambda i: abs(widths(i)[0] - target))
 
@@ -284,13 +312,13 @@ def split_at_best_comma(text, font_size_pt, usable_cx_emu=None):
 
 
 def suggest_independent_shape_resize(text, font_size_pt, xfrm, align, slide_width_emu,
-                                      insets_emu=0, max_width_ratio=0.92):
+                                      insets_emu=0, max_width_ratio=0.92, bold=False, spc_pt=0.0):
     """독립적인 제목/안내문 도형: 폭을 늘리고 정렬 기준으로 x를 재조정.
 
     est_width는 텍스트 상자 "내부"에 필요한 폭이므로, 도형의 외곽 cx를 정할 때는
     좌우 내부 여백(insets_emu)을 다시 더해줘야 한다 — 그렇지 않으면 여백만큼
     항상 조금씩 모자라게 넓혀서 여전히 넘칠 수 있다."""
-    est_width = estimate_text_width_emu(text, font_size_pt)
+    est_width = estimate_text_width_emu(text, font_size_pt, bold=bold, spc_pt=spc_pt)
     max_cx = int(slide_width_emu * max_width_ratio)
     new_cx = min(max(est_width + insets_emu, xfrm['cx']), max_cx)
 
