@@ -234,19 +234,55 @@ def _reposition_example_translations(extracted_slide, translated_by_shape_id, sl
         # 일반 슬라이드에 영향을 주지 않도록, 확실한 "예문" 슬라이드에서만 동작한다.
         return repositioned_ids
 
-    for group in _find_example_translation_groups(extracted_slide):
+    found_groups = _find_example_translation_groups(extracted_slide)
+    if not found_groups:
+        # "예문/정의/구조" 마커가 다 있는(=문법 설명 슬라이드가 맞는) 슬라이드인데도
+        # 그룹을 하나도 못 찾았다면, 컨테이너-번역 개수/좌표 매칭 조건 자체가 이
+        # 슬라이드의 실제 도형 구조와 안 맞는다는 뜻이다. 이것도 예전엔 완전히
+        # 조용히 넘어가서 원인 파악이 불가능했다 — 진단 가능하도록 표시한다.
+        review_flags.append({
+            "slide_index": slide_idx, "shape_name": None, "source_text": None, "translated_text": None,
+            "issue": (
+                "이 슬라이드는 문법 설명(정의/구조/예문) 슬라이드로 보이지만, 예문 번역 "
+                "재배치 대상 그룹을 찾지 못했습니다 — 예문 컨테이너 도형과 번역 도형의 "
+                "개수/좌표가 예상 패턴과 다를 수 있습니다. 예문 번역 위치가 원본 템플릿 "
+                "자리 그대로일 수 있으니 확인해주세요."
+            ),
+            "severity": "warning",
+        })
+        return repositioned_ids
+
+    for group in found_groups:
         container = group["container"]
         entries = []
         ok = True
+        missing_ids = []
         for t_meta in group["translations"]:
             entry = translated_by_shape_id.get(t_meta["shape_id"])
             if not entry:
                 ok = False
-                break
+                missing_ids.append(t_meta["shape_id"])
+                continue
             entries.append((t_meta, entry))
         if not ok or not entries:
             # 그룹 중 하나라도 이번에 번역되지 않았으면(스킵/누락 등) 안전하게
             # 기존 배치를 그대로 둔다 — 어설프게 절반만 옮기지 않는다.
+            # 예전엔 여기서 조용히 continue만 해서, "예문 정렬이 왜 안 고쳐지는지"를
+            # 검수 화면에서 전혀 알 수 없었다(실사용자 파일로 확인된 문제 — 텍스트는
+            # 제대로 번역돼 있는데 위치만 원본 템플릿 자리에 그대로 남아 있어도 아무
+            # 표시가 없었음). 원인을 바로 알 수 있도록 review_flag를 남긴다.
+            review_flags.append({
+                "slide_index": slide_idx, "shape_name": container["shape_name"],
+                "source_text": container["full_text"], "translated_text": None,
+                "issue": (
+                    "예문 번역 재배치를 건너뛰었습니다 — 이 그룹의 번역 도형 중 일부가 "
+                    f"이번 번역 결과에 없습니다(shape_id: {missing_ids}). 해당 도형이 "
+                    "번역되지 않으면 예문 전체의 위치를 원본 템플릿 자리 그대로 둡니다 "
+                    "(절반만 옮기지 않기 위함) — '실패한 배치만 재시도'로 누락된 도형을 "
+                    "먼저 번역한 뒤 다시 재검사해주세요."
+                ),
+                "severity": "warning",
+            })
             continue
 
         c_xfrm = container["xfrm_emu"]
@@ -785,12 +821,28 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     (xfrm["cx"] - insets_lr) if insets_lr is not None else int(xfrm["cx"] * ov.USABLE_WIDTH_RATIO),
                     1,
                 )
+                # 실사용자 파일(38번 슬라이드 "구조" 마지막 항목)로 직접 재현 확인한
+                # 문제: FONT_METRIC_SAFETY_MARGIN(1.08)을 적용해도 이 문구는 추정 폭이
+                # 실사용 가능 폭의 99.2%로 나와("한 줄로 들어간다"는 판정) 줄바꿈이
+                # 전혀 걸리지 않았는데, 실제 PowerPoint 렌더링(Noto Sans)에서는 박스
+                # 경계에 거의 닿거나 살짝 넘쳤다. 전역 안전 여유율을 더 올리면 다른
+                # 여러 도형에 영향을 주므로, 여기(이 박스 유형에만) 국소적으로 조금 더
+                # 보수적인 폭을 써서 이런 아슬아슬한 경우를 안전한 쪽(줄바꿈)으로
+                # 판정한다. 처음엔 "줄바꿈이 필요한지" 판단에만 이 좁힌 폭을 쓰고 실제
+                # 분할(split_text_for_width)은 원래 usable_cx로 했더니, 판단은
+                # "2줄 필요"로 나오는데 분할 함수는 같은(안 좁혀진) 폭 기준으로 "한
+                # 줄에 다 들어간다"고 판단해 분할 지점을 못 찾는 모순이 실제로 발생했다
+                # (len(split_lines)==1 → "자동 줄바꿈 지점을 찾지 못했습니다" 경고만
+                # 뜨고 실제로는 줄바꿈이 안 됨). 판단과 분할에 반드시 같은(좁힌) 폭을
+                # 써야 한다.
+                WRAP_DECISION_SAFETY_RATIO = 0.97
+                wrap_check_cx = max(int(usable_cx * WRAP_DECISION_SAFETY_RATIO), 1)
                 lines_needed = ov.estimate_line_count(
-                    translated_text, final_pt, xfrm["cx"], usable_cx_emu=usable_cx
+                    translated_text, final_pt, xfrm["cx"], usable_cx_emu=wrap_check_cx
                 )
                 if lines_needed > 1:
                     split_lines = ov.split_text_for_width(
-                        translated_text, final_pt, usable_cx, max_lines=lines_needed
+                        translated_text, final_pt, wrap_check_cx, max_lines=lines_needed
                     )
                     if split_lines and len(split_lines) > 1:
                         try:
