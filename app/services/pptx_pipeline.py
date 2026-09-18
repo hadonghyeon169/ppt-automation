@@ -77,13 +77,21 @@ BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO = 0.9  # 실제 말풍선 그래픽 경�
 # 쓰면 텍스트가 말풍선 테두리에 거의 닿아 보이므로 약간의 여유를 둔다.
 
 
-def _find_overlapping_bubble_cy(caption_xfrm, bubble_shape_bounds):
+def _find_overlapping_bubble_bounds(caption_xfrm, bubble_shape_bounds):
     """캡션 도형(caption_xfrm)과 x/y로 겹치는 말풍선 배경 도형을 찾아 그 실제
-    높이(cy)를 반환한다. 여러 개와 겹치면 겹침 면적이 가장 큰 것을 쓴다.
-    겹치는 말풍선이 없으면 None(호출부는 기존 고정 상한으로 폴백)."""
+    xfrm(x/y/cx/cy) 전체를 반환한다. 여러 개와 겹치면 겹침 면적이 가장 큰 것을 쓴다.
+    겹치는 말풍선이 없으면 None(호출부는 기존 고정 상한으로 폴백).
+
+    처음엔 높이(cy)만 반환했었는데, 실사용자 파일로 확인한 결과 캡션 도형의
+    "원본 박스 폭(cx)" 자체가 실제 말풍선 그래픽보다 훨씬 넓게(때로는 좌우로
+    말풍선 경계를 한참 벗어나게) 잡혀 있는 템플릿이 있었다(4번/26번 슬라이드).
+    높이만 실측 경계로 제한하고 폭은 그 과도하게 넓은 원본 cx 그대로 폰트를
+    맞추면, 번역문이 "말풍선보다 넓은 상자" 안에서는 안 넘쳐도 실제 말풍선
+    그래픽 밖으로 옆으로 삐져나온다 — 그래서 폭도 함께 실측 경계로 제한해야
+    한다."""
     if not caption_xfrm or not bubble_shape_bounds:
         return None
-    best_cy = None
+    best_bounds = None
     best_overlap = 0
     cx0, cy0 = caption_xfrm["x"], caption_xfrm["y"]
     cx1, cy1 = cx0 + caption_xfrm["cx"], cy0 + caption_xfrm["cy"]
@@ -95,8 +103,8 @@ def _find_overlapping_bubble_cy(caption_xfrm, bubble_shape_bounds):
         overlap = overlap_x * overlap_y
         if overlap > best_overlap:
             best_overlap = overlap
-            best_cy = b["cy"]
-    return best_cy
+            best_bounds = b
+    return best_bounds
 
 
 def _boxes_horizontally_adjacent(a, b, slide_width_emu):
@@ -130,6 +138,31 @@ EXAMPLE_KR_LINE_HEIGHT_FACTOR = 1.3
 DEFAULT_INSETS_LR_EMU = 91440 * 2
 
 
+_TRIVIAL_CANDIDATE_RE = re.compile(r"[\s.,!?;:'\"()\-–—…·•。，！？；：、]+")
+
+
+def _is_trivial_translation_candidate_text(text):
+    """실사용자 파일(초급2 12강 13번 슬라이드)에서 확인된 문제: 템플릿에 진짜 예문
+    번역칸이 아니라 마침표 하나("."류)만 들어있는 정체불명의 "번역" 이름 도형이
+    섞여 있는 경우가 있다. 이런 "부스러기" 도형이 후보에 끼면 개수 매칭이 틀어져서
+    (3자리인데 4개가 잡힘) 그룹 전체가 오매칭되거나(엉뚱한 예문과 짝지어짐) 통째로
+    버려진다(len(candidates) != n). 구두점/공백만 제거했을 때 실질 글자가 1개 이하로
+    남는 도형은 온전한 예문 번역일 수 없으므로 후보에서 아예 제외한다."""
+    stripped = _TRIVIAL_CANDIDATE_RE.sub("", text or "")
+    return len(stripped) <= 1
+
+
+# 컨테이너의 세로 범위(y0~y1)를 살짝 벗어나 배치된 "번역" 도형을 후보에서 놓치는
+# 문제가 실사용자 파일(13/38번 슬라이드)에서 반복 관찰됐다 — 템플릿이 마지막
+# 문단의 번역을 컨테이너 바닥 바로 아래(또는 살짝 겹치게)에 배치해두는 경우가
+# 흔한데, 엄격한 "y < c_y1" 조건으로는 이런 정상적인 후보가 빠져서 개수가 안
+# 맞아(len(candidates) != n) 그룹 전체가 버려졌다(그 결과 재배치/정렬 로직이 아예
+# 동작하지 않아 번역 도형이 템플릿 원위치에 그대로 남아 한국어 텍스트와 어긋나
+# 보였다 — "내가 수정한 것처럼 보인다"는 사용자 피드백의 실제 원인). 컨테이너
+# 높이의 넉넉한 비율만큼 여유를 둔다.
+EXAMPLE_GROUP_Y_TOLERANCE_RATIO = 0.25
+
+
 def _find_example_translation_groups(extracted_slide):
     """"예문" 슬라이드에서, 여러 문단짜리 한국어 예문 컨테이너 도형과 그 옆에 개별
     배치된 번역("번역"으로 이름 붙은) 도형들을 쌍으로 묶는다. 컨테이너 문단 수와
@@ -158,13 +191,18 @@ def _find_example_translation_groups(extracted_slide):
         if (s["shape_name"] or "") == "번역"
         and s["xfrm_emu"]
         and not s.get("is_grouped")
+        and not _is_trivial_translation_candidate_text(s.get("full_text"))
     ]
     groups = []
     used_ids = set()
     for container in containers:
         n = container["paragraph_count"]
         c = container["xfrm_emu"]
-        c_y0, c_y1 = c["y"], c["y"] + c["cy"]
+        # 여유는 "바닥" 쪽에만 준다 — 위쪽까지 넉넉하게 열면 컨테이너 바로 위에 있는
+        # "정의/구조/예문" 아이콘 라벨의 번역 도형(예: 오른쪽 위의 "【Примеры】")까지
+        # 후보로 끌려들어와 오히려 개수가 안 맞게 된다(실사용자 파일로 확인).
+        y_tolerance = int(c["cy"] * EXAMPLE_GROUP_Y_TOLERANCE_RATIO)
+        c_y0, c_y1 = c["y"], c["y"] + c["cy"] + y_tolerance
         # y축 겹침만으로는 슬라이드 반대편(왼쪽)에 있는, 전혀 다른 상자(예: "정의"/
         # "구조" 규칙 설명 상자의 번역)까지 끌려들어올 수 있다(실제 겪음: 왼쪽에
         # 있는 번역 도형이 우연히 이 컨테이너의 y범위와 겹쳐 후보에 잡힘) — 템플릿상
@@ -474,6 +512,18 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
             # 워드랩(임의의 단어 경계에서 잘림)에 맡기지 않기 위함. 아래
             # fit_font_size_to_box 호출보다 먼저 텍스트에 "\n"을 넣어야
             # 폰트/높이 계산이 실제 2줄 레이아웃 기준으로 정확히 이루어진다.
+            is_bubble_caption_box = (
+                bubble_caption_slide and meta["shape_name"] == "번역" and meta["wrap"] == "square"
+            )
+            # 겹치는 실제 말풍선 그래픽 도형의 실측 경계(x/y/cx/cy) — 높이뿐 아니라
+            # 폭도 이 경계를 기준으로 삼는다(아래 _find_overlapping_bubble_bounds
+            # 주석 참고: 캡션 도형의 원본 박스 폭 자체가 말풍선보다 넓은 템플릿이
+            # 있어, 폭을 제한하지 않으면 번역문이 박스 안엔 들어가도 말풍선 밖으로
+            # 삐져나온다 — 4번/26번 슬라이드에서 실제 확인).
+            real_bubble_bounds = (
+                _find_overlapping_bubble_bounds(meta["xfrm_emu"], bubble_shape_bounds)
+                if is_bubble_caption_box else None
+            )
             if (
                 bubble_caption_slide
                 and meta["shape_name"] == "번역"
@@ -485,6 +535,8 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                 if meta["xfrm_emu"]:
                     insets_lr = meta.get("insets_lr_emu")
                     box_cx = meta["xfrm_emu"]["cx"]
+                    if real_bubble_bounds:
+                        box_cx = min(box_cx, int(real_bubble_bounds["cx"] * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO))
                     usable_cx_for_split = max(
                         box_cx - insets_lr if insets_lr is not None else int(box_cx * ov.USABLE_WIDTH_RATIO),
                         1,
@@ -499,13 +551,26 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                         "severity": "info",
                     })
 
-            is_bubble_caption_box = (
-                bubble_caption_slide and meta["shape_name"] == "번역" and meta["wrap"] == "square"
-            )
             is_bracket_label_box = (
                 meta["shape_name"] == "번역"
                 and meta["wrap"] == "square"
                 and bool(BRACKET_LABEL_RE.match((translated_text or "").strip()))
+            )
+            # 말풍선 캡션도 아니고 대괄호 라벨도 아닌 일반 "번역" wrap="square" 도형
+            # (예: 38번 슬라이드 "구조" 항목처럼 문법 규칙을 설명하는 상자) — 아래에서
+            # fit_font_size_to_box로 폰트만 줄이고 실제 줄바꿈은 PowerPoint의 자동
+            # 워드랩에 맡겼었는데, 우리 폭 추정치(DejaVu Sans 근사)와 실제 렌더링
+            # 폰트(Noto Sans 등) 사이의 오차가 크지 않아도 박스 폭이 빠듯하면 추정이
+            # 살짝만 어긋나도 "1줄로 들어간다"고 오판해 실제로는 2줄로 감기지 않고
+            # 박스 밖으로 삐져나갔다(사용자 피드백: "텍스트가 벗어나면 두 줄 바꿈으로
+            # 하기" — 38번 슬라이드 구조 마지막 항목). 예측에만 의존하지 않고, 필요한
+            # 줄 수를 직접 계산해 명시적으로 줄바꿈(<a:br/>)을 넣고 그만큼 도형 높이도
+            # 늘려 안전망을 이중으로 둔다.
+            is_plain_translation_box = (
+                meta["shape_name"] == "번역"
+                and meta["wrap"] == "square"
+                and not is_bubble_caption_box
+                and not is_bracket_label_box
             )
 
             fit_note = None
@@ -530,15 +595,38 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
                     # 말풍선 밖으로 삐져나왔다(사용자 피드백: "말풍선 박스를 벗어나지
                     # 않도록" — 26번 슬라이드). 겹치는 실제 말풍선 도형을 찾았으면
                     # 그 실측 높이(약간의 여유율 적용)로 상한을 낮춘다.
-                    caption_ceiling_emu = BUBBLE_CAPTION_HEIGHT_CEILING_EMU
-                    real_bubble_cy = _find_overlapping_bubble_cy(meta["xfrm_emu"], bubble_shape_bounds)
-                    if real_bubble_cy:
-                        caption_ceiling_emu = min(
-                            caption_ceiling_emu,
-                            int(real_bubble_cy * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO),
+                    if real_bubble_bounds:
+                        # 실측 말풍선 경계를 찾았으면 이게 "권위 있는" 기준이다 —
+                        # 말풍선 "전체" 높이가 아니라, 이 캡션 도형이 실제로 시작하는
+                        # y좌표부터 말풍선 바닥까지 "남은" 공간을 그대로 상한으로 쓴다.
+                        # 캡션 도형은 대개 말풍선 위쪽(캐릭터 대사용 한국어 텍스트)
+                        # 아래에 자리잡으므로, 말풍선 전체 높이를 상한으로 쓰면 실제
+                        # 가용 공간보다 넉넉하게 계산해 폰트를 덜 줄이고 결국 말풍선
+                        # 바닥을 넘기게 된다(실사용자 파일에서 확인: 텍스트 마지막 줄이
+                        # 말풍선 테두리에 닿음). 원본 박스 cy를 max()로 섞으면(이전
+                        # 버전의 버그) 원본이 이미 크게 잡혀 있던 도형에서 이 상한이
+                        # 무력화되므로, 실측 경계가 있을 때는 원본 cy/고정 상한 둘 다
+                        # 무시하고 이 "남은 공간"만 쓴다. 도형 위치(y)는 절대 옮기지
+                        # 않는다 — 그 위에 이미 자리잡은 한국어 대사 텍스트와 겹치지
+                        # 않도록, 대신 남는 공간만큼만 텍스트가 들어가도록 폰트를
+                        # 필요한 만큼 줄인다.
+                        bubble_bottom_safe = int(
+                            real_bubble_bounds["y"]
+                            + real_bubble_bounds["cy"] * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO
                         )
-                    fit_box_cy = max(fit_box_cy, caption_ceiling_emu)
+                        fit_box_cy = max(bubble_bottom_safe - meta["xfrm_emu"]["y"], 1)
+                    else:
+                        # 실측 말풍선을 못 찾았을 때만 기존처럼 "작은 원본 박스를
+                        # 여유 있게 키운" 고정 상한으로 폴백한다.
+                        fit_box_cy = max(fit_box_cy, BUBBLE_CAPTION_HEIGHT_CEILING_EMU)
                     fit_min_pt = BUBBLE_CAPTION_MIN_FONT_PT
+                    # 폭도 원본 박스가 실제 말풍선보다 넓으면 실측 폭(여유율 적용)으로
+                    # 줄인다 — 그래야 폰트 피팅이 "말풍선 밖으로 삐져나가지 않는" 폭
+                    # 기준으로 계산된다(원본 박스 폭 그대로 쓰면 실제 말풍선보다 넓은
+                    # 상자 안에서는 안 넘쳐도 그래픽 밖으로는 삐져나올 수 있다).
+                    if real_bubble_bounds:
+                        safe_bubble_cx = int(real_bubble_bounds["cx"] * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO)
+                        fit_box_cx = min(fit_box_cx, safe_bubble_cx)
                 if is_bracket_label_box:
                     # "【단어】" 라벨 도형 — 우리 폭 추정치와 실제 렌더링 폭 오차 때문에
                     # 원본 박스 폭 그대로면 "1줄에 들어간다"고 계산해도 실제로는 대괄호
@@ -623,32 +711,118 @@ def apply_translation_plan(pptx_path, extracted, plan_by_shape, lang_code, lang_
 
             if is_bubble_caption_box and meta["xfrm_emu"]:
                 # 방금 적용한 실제 폰트 크기 기준으로 필요한 높이를 계산해, 원본
-                # 도형보다 크면(폰트를 키워서 안 들어가는 경우) 세로로만 키운다
-                # (좌표/가로 폭은 그대로 유지 — 캡션 도형은 대개 주변에 여유가 있다).
+                # 도형보다 크면(폰트를 키워서 안 들어가는 경우) 세로로 키운다.
+                # 폭은 원본 박스가 실제 말풍선 그래픽보다 넓을 때만(실측 경계를
+                # 찾았을 때만) 그 실측 폭(여유율 적용)으로 줄이고, 그 경우 텍스트가
+                # 말풍선 중앙에 오도록 x도 함께 다시 계산한다 — 폭만 줄이고 x를
+                # 그대로 두면 캡션이 말풍선의 한쪽으로 치우쳐 보인다.
                 final_pt = force_sz_pt or requested_pt
+                new_cx = meta["xfrm_emu"]["cx"]
+                new_x = meta["xfrm_emu"]["x"]
+                if real_bubble_bounds:
+                    safe_bubble_cx = int(real_bubble_bounds["cx"] * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO)
+                    if safe_bubble_cx < new_cx:
+                        new_cx = safe_bubble_cx
+                        bubble_center_x = real_bubble_bounds["x"] + real_bubble_bounds["cx"] / 2
+                        new_x = int(bubble_center_x - new_cx / 2)
                 usable_cx_h = (
-                    meta["xfrm_emu"]["cx"] - meta["insets_lr_emu"]
+                    new_cx - meta["insets_lr_emu"]
                     if meta.get("insets_lr_emu") is not None
-                    else int(meta["xfrm_emu"]["cx"] * ov.USABLE_WIDTH_RATIO)
+                    else int(new_cx * ov.USABLE_WIDTH_RATIO)
                 )
                 text_for_height = text_for_fit if isinstance(text_for_fit, str) else "\n".join(text_for_fit)
                 lines_h = ov.estimate_line_count(
-                    text_for_height, final_pt, meta["xfrm_emu"]["cx"], usable_cx_emu=max(usable_cx_h, 1)
+                    text_for_height, final_pt, new_cx, usable_cx_emu=max(usable_cx_h, 1)
                 )
                 insets_tb = meta.get("insets_tb_emu") or 0
                 needed_h = int(lines_h * final_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT + insets_tb)
-                # 위 폰트 피팅 단계와 같은 이유로, 도형을 실제로 키울 때도 겹치는
-                # 말풍선 그래픽의 실측 높이를 넘지 않도록 다시 한번 제한한다 — 폰트
-                # 피팅 상한과 별개로 여기서 도형 cy를 직접 설정하므로 각각 캡이 필요.
-                real_bubble_cy = _find_overlapping_bubble_cy(meta["xfrm_emu"], bubble_shape_bounds)
-                if real_bubble_cy:
-                    needed_h = min(needed_h, int(real_bubble_cy * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO))
-                if needed_h > meta["xfrm_emu"]["cy"]:
+                final_cy = max(needed_h, meta["xfrm_emu"]["cy"])
+                # 위 폰트 피팅 단계와 같은 이유로, 도형을 실제로 키울 때도 겹치는 말풍선
+                # 그래픽의 실측 바닥을 넘지 않도록 다시 한번 제한한다 — 폰트 피팅 상한과
+                # 별개로 여기서 도형 cy를 직접 설정하므로 각각 캡이 필요. 이때 말풍선
+                # "전체" 높이가 아니라 "이 도형의 y좌표부터 말풍선 바닥까지 남은 공간"을
+                # 상한으로 써야 한다(그렇지 않으면 원본 cy가 이미 크게 잡혀 있던 도형이
+                # y+cy로 말풍선 바닥을 넘겨도 못 잡아낸다 — 실사용자 파일에서 확인).
+                # 도형 위치(y)는 절대 옮기지 않는다 — 그 위에는 이미 캐릭터 대사(한국어)
+                # 텍스트가 자리잡고 있어서, 위로 당기면 오히려 그 텍스트와 겹쳐 보인다
+                # (한 차례 시도했다가 실측 확인 후 되돌림). 대신 남는 공간만큼만 높이를
+                # 허용해 자연스럽게 폰트/줄바꿈이 그 안에 맞춰지도록 한다.
+                if real_bubble_bounds:
+                    bubble_bottom_safe = int(
+                        real_bubble_bounds["y"]
+                        + real_bubble_bounds["cy"] * BUBBLE_CAPTION_REAL_BOUNDS_SAFETY_RATIO
+                    )
+                    available_from_y = max(bubble_bottom_safe - meta["xfrm_emu"]["y"], 1)
+                    final_cy = min(final_cy, available_from_y)
+                needs_resize = (
+                    final_cy != meta["xfrm_emu"]["cy"]
+                    or new_cx != meta["xfrm_emu"]["cx"]
+                )
+                if needs_resize:
                     try:
                         ops.set_body_pr_wrap_square_autofit(sp)
-                        ops.set_shape_xfrm(sp, cy=needed_h)
+                        ops.set_shape_xfrm(sp, x=new_x, y=meta["xfrm_emu"]["y"], cx=new_cx, cy=final_cy)
                     except Exception:
                         pass
+
+            if (
+                is_plain_translation_box
+                and meta["xfrm_emu"]
+                and not translated_paragraphs
+                and translated_text
+                and "\n" not in translated_text
+            ):
+                # fit_font_size_to_box는 폰트 크기만 정하고, 실제로 몇 줄로 감길지는
+                # PowerPoint 자체의 렌더링(자동 워드랩)에 맡겨져 있었다 — 우리 추정과
+                # 실제 렌더링이 근소하게라도 어긋나면 "2줄로 들어간다"고 계산해놓고도
+                # 실제로는 줄바꿈 없이 박스 밖으로 삐져나올 수 있다. 여기서는 예측에만
+                # 기대지 않고, 필요한 줄 수를 직접 계산해 명시적으로 줄을 나누고
+                # (<a:br/>) 부족하면 도형 높이도 그만큼 늘려서 이중으로 안전하게 만든다.
+                final_pt = force_sz_pt or requested_pt
+                xfrm = meta["xfrm_emu"]
+                insets_lr = meta.get("insets_lr_emu")
+                usable_cx = max(
+                    (xfrm["cx"] - insets_lr) if insets_lr is not None else int(xfrm["cx"] * ov.USABLE_WIDTH_RATIO),
+                    1,
+                )
+                lines_needed = ov.estimate_line_count(
+                    translated_text, final_pt, xfrm["cx"], usable_cx_emu=usable_cx
+                )
+                if lines_needed > 1:
+                    split_lines = ov.split_text_for_width(
+                        translated_text, final_pt, usable_cx, max_lines=lines_needed
+                    )
+                    if split_lines and len(split_lines) > 1:
+                        try:
+                            ops.force_multiline(sp, split_lines)
+                            insets_tb = meta.get("insets_tb_emu") or 0
+                            needed_h = int(
+                                len(split_lines) * final_pt * ov.LINE_SPACING_FACTOR * ov.EMU_PER_PT + insets_tb
+                            )
+                            if needed_h > xfrm["cy"]:
+                                ops.set_body_pr_wrap_square_autofit(sp)
+                                ops.set_shape_xfrm(sp, cy=needed_h)
+                            review_flags.append({
+                                "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                                "source_text": meta["full_text"], "translated_text": "\n".join(split_lines),
+                                "issue": f"번역 텍스트가 도형 폭을 넘어 {len(split_lines)}줄로 자동 "
+                                         "줄바꿈했습니다(필요한 만큼 도형 높이도 늘렸습니다).",
+                                "severity": "info",
+                            })
+                        except Exception as e:
+                            review_flags.append({
+                                "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                                "source_text": meta["full_text"], "translated_text": translated_text,
+                                "issue": f"줄바꿈 보정 중 오류 (수동 확인 필요): {e}", "severity": "warning",
+                            })
+                    else:
+                        review_flags.append({
+                            "slide_index": slide_idx, "shape_name": meta["shape_name"],
+                            "source_text": meta["full_text"], "translated_text": translated_text,
+                            "issue": "번역 텍스트가 도형 폭에 비해 길어 넘칠 수 있으나 자동 줄바꿈"
+                                     "지점을 찾지 못했습니다 — 수동으로 확인해주세요.",
+                            "severity": "warning",
+                        })
 
             applied_records.append({
                 "slide_index": slide_idx,
