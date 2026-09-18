@@ -182,6 +182,32 @@ def force_multiline(sp_elem, lines):
         _append_extra_lines(all_runs[0], lines[1:])
 
 
+def get_first_run_style_hints(sp_elem):
+    """도형의 첫 <a:r> run의 rPr에서 폭 추정에 필요한 두 힌트를 읽어온다:
+    (is_bold: bool, spc_pt: float — 글자 사이 간격, pt 단위).
+
+    apply_shape_level/restore_shape_translation은 번역 텍스트를 적용할 때도
+    기존 rPr(b, spc 등)을 그대로 유지하므로(텍스트만 <a:t>를 교체), 번역
+    적용 후에도 이 값을 읽으면 실제로 렌더링될 서식을 정확히 알 수 있다.
+    overflow.py의 폭 추정(estimate_text_width_emu 등)이 DejaVu Sans 레귤러/
+    글자간격 없음만 가정하던 것을 보정하는 용도 — 실사용자 파일로 확인된 두
+    사례(38번 슬라이드 bold 구조 박스가 실제보다 좁게 추정돼 넘침을 놓침,
+    2번 표지 슬라이드 spc=-300 텍스트가 실제보다 넓게 추정돼 불필요하게
+    줄바꿈됨) 모두 이 두 속성을 무시한 게 원인이었다.
+
+    속성이 없으면 각각 기본값(False, 0.0)을 반환한다."""
+    for run in sp_elem.iter(qn('a:r')):
+        rPr = run.find(qn('a:rPr'))
+        if rPr is None:
+            continue
+        b_attr = rPr.get('b')
+        is_bold = b_attr == '1'
+        spc_attr = rPr.get('spc')
+        spc_pt = (int(spc_attr) / 100.0) if spc_attr is not None else 0.0
+        return is_bold, spc_pt
+    return False, 0.0
+
+
 def apply_shape_level(sp_elem, translated_text, lang_code, font_name, is_complex=False,
                        force_sz=None, force_bold=None, force_color=None):
     """일반(흰색 아님) 도형 번역 적용. 여러 run은 첫 run으로 합치고 나머지는 비운다.
